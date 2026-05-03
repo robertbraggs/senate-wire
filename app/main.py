@@ -305,6 +305,7 @@ def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
 def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     cleaned = clean(text or "")
     blocks = [clean(b) for b in re.split(r"\n{2,}", text or "") if clean(b)]
+    window_end = today + timedelta(days=14)
     rejected_blocks: List[str] = []
     ignored_dates: List[str] = []
 
@@ -335,10 +336,15 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             return False
         return s[-1] in ".!?"
 
-    def strip_timing_constraints(s: str) -> str:
-        s = re.sub(r",?\s*no earlier than\s+[^,.;]+", "", s, flags=re.I)
-        s = re.sub(r",?\s*not earlier than\s+[^,.;]+", "", s, flags=re.I)
-        return clean(s.strip(" ,.;"))
+    def in_window(d: Optional[date]) -> bool:
+        return bool(d and today <= d <= window_end)
+
+    def normalize_time_label(raw: str, approximate: bool = False) -> str:
+        parsed = parse_time(raw or "")
+        if not parsed:
+            return clean(raw or "")
+        base = fmt_time(parsed) or clean(raw or "")
+        return f"approx. {base}" if approximate else base
 
     def shorten_nomination(v: str) -> str:
         v = clean(v)
@@ -379,7 +385,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             continue
         d = parse_schedule_date(snippet)
         t = parse_time(snippet)
-        if not d or d < today:
+        if not in_window(d):
             continue
         key = (d.isoformat(), fmt_time(t) or "")
         if key in pro_forma_seen:
@@ -392,7 +398,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     if m:
         d = parse_schedule_date(m.group(2))
         t = parse_time(m.group(1))
-        if d and d >= today:
+        if in_window(d):
             next_convening = {"date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t), "date_obj": d}
 
     floor_schedule = []
@@ -402,54 +408,61 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         floor_schedule.append("Morning business")
 
     vote_block = {}
-    override = re.search(r"(\d+)\s+roll\s+call\s+votes?\s+expected", accepted, flags=re.I)
-    block_match = re.search(r"At approximately\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).{0,200}?will vote", accepted, flags=re.I)
-    block_time = parse_time(block_match.group(1)) if block_match else None
-    if block_time and next_convening:
+    expected_votes = []
+    block_line = None
+    block_votes_expected = None
+    for line in re.split(r"(?:\n+|(?<=[.])\s+)", accepted):
+        line = clean(line)
+        if not line:
+            continue
+        m_votes = re.search(r"(\d+)\s+roll\s+call\s+votes?\s+expected", line, flags=re.I)
+        if m_votes:
+            block_line = line
+            block_votes_expected = int(m_votes.group(1))
+            break
+
+    if block_line and next_convening:
+        time_match = re.search(r"(?:at\s+)?(approximately\s+)?(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", block_line, flags=re.I)
+        raw_time = time_match.group(2) if time_match else ""
         vote_block = {
             "date": next_convening["date"],
-            "time": fmt_time(block_time),
+            "time": normalize_time_label(raw_time, approximate=False),
             "date_label": next_convening["date_label"],
-            "time_label": f"approx. {fmt_time(block_time)}",
-            "roll_call_votes_expected": int(override.group(1)) if override else None,
+            "time_label": normalize_time_label(raw_time, approximate=True),
+            "roll_call_votes_expected": block_votes_expected,
         }
-
-    expected_votes = []
     cloture_filed = []
-    seen_votes = set()
-    first_nomination = None
-    for sent in re.split(r"(?<=[.])\s+", accepted):
-        s = clean(sent)
-        if not valid_sentence(s):
-            continue
-        ls = s.lower()
-        if any(x in ls for x in ["wrap up for", "for a term of", "term expiring", "confirmed:", "agreed to:", "the senate is now voting"]):
-            continue
-        candidate = None
-        if "will vote on" in ls:
-            candidate = clean(s.split("will vote on", 1)[1].strip().rstrip("."))
-        elif "vote on the motion to invoke cloture" in ls:
-            m2 = re.search(r"(motion to invoke cloture[^.]+)", s, flags=re.I)
-            candidate = clean(m2.group(1) if m2 else s).rstrip(".")
-        if candidate:
-            candidate = strip_timing_constraints(candidate)
-            if candidate.lower().startswith("adoption of"):
-                candidate = candidate[0].upper() + candidate[1:]
-            short_candidate = shorten_nomination(candidate)
-            if first_nomination and short_candidate.lower() == first_nomination.lower():
-                candidate = short_candidate
-            elif "executive calendar" in short_candidate.lower() and not first_nomination:
-                first_nomination = short_candidate
-            elif first_nomination and "executive calendar" in candidate.lower():
-                candidate = short_candidate
-            k = candidate.lower()
-            if k and k not in seen_votes:
+    if block_line:
+        lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
+        start_idx = next((i for i, x in enumerate(lines) if block_line in x or x in block_line), None)
+        candidate_lines = lines[start_idx + 1:] if start_idx is not None else []
+        seen_votes = set()
+        for raw in candidate_lines:
+            s = clean(raw.strip(" -•\t"))
+            if not s:
+                continue
+            lower = s.lower()
+            if "roll call votes expected" in lower:
+                break
+            if any(k in lower for k in ["leader remarks", "morning business", "will next convene", "pro forma", "stands adjourned"]):
+                break
+            has_allowed_marker = any(k in s for k in ["Calendar #", "S.Res", "Executive Calendar"]) or any(
+                k in lower for k in ["nomination", "cloture on executive calendar"]
+            )
+            if (not has_allowed_marker or
+                lower.startswith("no earlier than") or
+                s[:1].islower() or
+                len(s.split()) < 8):
+                continue
+            if not re.search(r"(Calendar\s*#|S\.Res|Executive Calendar|nomination|cloture)", s, flags=re.I):
+                continue
+            if s.lower().startswith("adoption of"):
+                s = s[0].upper() + s[1:]
+            s = shorten_nomination(s.rstrip("."))
+            k = s.lower()
+            if k not in seen_votes:
                 seen_votes.add(k)
-                expected_votes.append(candidate)
-        if "filed cloture" in ls or "cloture filed" in ls:
-            cf = strip_timing_constraints(s.rstrip("."))
-            if valid_sentence(cf + "."):
-                cloture_filed.append(cf)
+                expected_votes.append(s)
 
     return {
         "pro_formas": pro_formas[:6],
@@ -467,13 +480,14 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
 def forward_schedule_parser_smoke_test() -> Dict[str, Any]:
     """Unit-style parser fixture for deterministic forward floor schedule extraction."""
-    sample_text = """Other than pro formas on Monday, May 4 at 6:45 a.m. and Thursday, May 7 at 10:00 a.m. the Senate will next convene at 3:00 p.m. on Monday, May 11th with two votes that evening at 5:30 p.m.
+    sample_text = """Other than pro formas on Monday, May 4 at 6:45 a.m. and Thursday, May 7 at 10:00 a.m. the Senate will next convene at 3:00 p.m. on Monday, May 11th.
 The Senate stands adjourned for pro forma sessions only...
 Monday, May 4th at 6:45am
 Thursday, May 7th at 10:00am
 When the Senate adjourns on Thursday, it will next convene at 3:00pm on Monday, May 11, 2026.
-At approximately 5:30pm, the Senate will vote on adoption of Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
-Following disposition... vote on the motion to invoke cloture on Executive Calendar #728 Kevin Warsh...
+At approximately 5:30pm, 2 roll call votes expected.
+Adoption of Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
+Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination.
 for a term of fourteen years from February 1, 2026.
 Wrap Up for April 30, 2026."""
     parsed = parse_forward_floor_schedule(sample_text, date(2026, 5, 3))
@@ -1875,7 +1889,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         pro_forma_html = "".join(
             f"<li>{html.escape(p.get('date_label', ''))} · {html.escape(p.get('time_label', ''))}</li>" for p in pro_formas
         ) or "<li>None announced</li>"
-        votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in expected_votes[:6]) or "<li>No expected votes announced.</li>"
+        votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in expected_votes[:6]) or "<li>No vote block announced. Monitor leadership schedule.</li>"
         convene_label = " · ".join(x for x in [convene.get("date_label") if convene else "", convene.get("time_label") if convene else ""] if x) or "Not yet announced"
         vote_label = " · ".join(x for x in [vote_block.get("date_label") if vote_block else "", vote_block.get("time_label") if vote_block else ""] if x) or "Not yet announced"
         return f"""
