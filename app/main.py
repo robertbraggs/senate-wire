@@ -682,6 +682,18 @@ def fmt_time(t: Optional[time]) -> Optional[str]:
     return f"{hour}:{t.minute:02d} {'a.m.' if t.hour < 12 else 'p.m.'}"
 
 
+def fmt_short_date_label(label: Optional[str]) -> Optional[str]:
+    if not label:
+        return label
+    text = clean(label)
+    for pattern in ("%A, %B %d, %Y", "%B %d, %Y"):
+        try:
+            return datetime.strptime(text, pattern).strftime("%b %d").replace(" 0", " ")
+        except ValueError:
+            continue
+    return label
+
+
 def sort_dt(d: Optional[date], t: Optional[time]) -> Optional[str]:
     if d and t:
         return datetime.combine(d, t).isoformat()
@@ -2225,6 +2237,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
 
     if parsed:
         cards = []
+        default_timing = "Monday, May 11, 2026 · approx. 5:30 p.m."
         for text in parsed[:6]:
             lower_text = text.lower()
             action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
@@ -2238,7 +2251,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <h3>{html.escape(title)}</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
-                    <div><strong>Timing:</strong> {html.escape("Monday, May 11, 2026 · approx. 5:30 p.m." if vote_timing == "Future floor action not yet scheduled" else vote_timing)}</div>
+                    <div><strong>Timing:</strong> {html.escape(default_timing if vote_timing == "Future floor action not yet scheduled" else vote_timing)}</div>
                     <div><strong>Chamber phase:</strong> Executive session</div>
                     <div><strong>Context:</strong> {html.escape('En bloc consideration of 49 nominations.' if 's.res.690' in lower_text or 'calendar #5' in lower_text else 'Vote on whether to limit debate on the nomination.' if 'cloture' in lower_text and 'warsh' in lower_text else 'Expected floor consideration from current schedule sources.')}</div>
                 </div>
@@ -2258,7 +2271,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 </div>
             </article>
             """)
-        return "".join(cards) if cards else ""
+        return "".join(cards) if cards else empty_message("Forward Look: Legislation & Nominations")
 
     include_tokens = ["cloture", "motion to proceed", "confirmation", "nomination", "passage", "roll call", "executive", "s.", "h.r.", "resolution"]
     out = []
@@ -2275,7 +2288,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
         out.append(item)
 
     if not out:
-        return ""
+        return empty_message("Forward Look: Legislation & Nominations")
 
     cards = []
     for item in sorted(out, key=lambda x: (x.sort_datetime is None, x.sort_datetime or '9999'))[:6]:
@@ -2421,7 +2434,8 @@ def badge_class(urgency: str) -> str:
 
 
 def item_card(item: JoltItem, view: str = "reporter") -> str:
-    when = " · ".join(x for x in [item.date_label, item.time_label] if is_meaningful(x)) or "Time TBD"
+    display_date = fmt_short_date_label(item.date_label)
+    when = " · ".join(x for x in [display_date, item.time_label] if is_meaningful(x)) or "Time TBD"
 
     links = []
     committee_event = any(k in clean(f"{item.title} {item.raw}").lower() for k in ["hearing", "committee meeting", "markup", "business meeting"])
@@ -2449,7 +2463,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         section_name = "Procedural Context"
     logistics_rows = []
     if section_name == "Procedural Context":
-        title = " · ".join(x for x in [item.title, item.date_label, item.time_label] if x)
+        title = " · ".join(x for x in [item.title, display_date, item.time_label] if x)
         return f"""
         <article class="card">
             <h3>{html.escape(title)}</h3>
@@ -2463,7 +2477,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         """
     elif item.category == "Earlier Floor Activity":
         event_type = item.event_type or item.title
-        line = " · ".join(x for x in [event_type, item.date_label, item.time_label] if x)
+        line = " · ".join(x for x in [event_type, display_date, item.time_label] if x)
         return f"""
         <article class="card">
             <h3>{html.escape(line)}</h3>
@@ -2539,6 +2553,41 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
     <section class="section">
         <h2>{html.escape(title)}</h2>
         {cards if cards else empty_message(title)}
+    </section>
+    """
+
+
+def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], view: str) -> str:
+    today = datetime.now().date()
+    todays_votes: List[JoltItem] = []
+    for item in votes:
+        if not item.sort_datetime:
+            continue
+        try:
+            dt = datetime.fromisoformat(item.sort_datetime)
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            if dt.date() == today:
+                todays_votes.append(item)
+        except ValueError:
+            continue
+
+    if todays_votes:
+        return section("Key Votes", todays_votes, view)
+
+    schedule_context = context.get("schedule_context", {}) if context else {}
+    vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
+    next_votes_line = ""
+    if vote_block.get("date_label") or vote_block.get("time_label"):
+        next_date = vote_block.get("date_label", "").replace(", 2026", "")
+        next_time = vote_block.get("time_label", "")
+        next_votes_line = f"Next expected votes: {next_date} · {next_time}."
+    fallback = "No votes scheduled today."
+    message = f"{fallback}<br>{html.escape(next_votes_line)}" if next_votes_line else fallback
+    return f"""
+    <section class="section">
+        <h2>Key Votes</h2>
+        <p class="empty">{message}</p>
     </section>
     """
 
@@ -2638,7 +2687,7 @@ def procedural_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltI
                 dt = datetime.fromisoformat(item.sort_datetime)
                 if dt.tzinfo is not None:
                     dt = dt.replace(tzinfo=None)
-                if dt >= now - timedelta(hours=72):
+                if dt >= now - timedelta(hours=96):
                     target = recent
             except ValueError:
                 pass
@@ -3016,7 +3065,7 @@ def dashboard(
 
                 <section class="section"><h2>Active Signals summary</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
                                 {section("Senate Floor Activity", groups.get("Schedule", []), view)}
-                {section("Key Votes", groups.get("Votes", []), view)}
+                {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
                                 <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
