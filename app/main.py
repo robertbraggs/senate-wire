@@ -970,6 +970,65 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
     return sorted(out, key=lambda x: x.sort_datetime or "9999")[:6]
 
 
+
+
+def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
+    now = datetime.now()
+
+    def parse_item_dt(item: JoltItem) -> Optional[datetime]:
+        if not item.sort_datetime:
+            return None
+        try:
+            dt = datetime.fromisoformat(item.sort_datetime)
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt
+        except ValueError:
+            return None
+
+    votes = [x for x in items if x.category == "Votes"]
+    active_votes = [x for x in votes if x.status != "historical"]
+
+    if active_votes:
+        return {
+            "where_to_be_now": "Ohio Clock / chamber exits",
+            "movement": "Move now",
+            "watch": "Active floor vote window; watch leadership, sponsors, and swing votes.",
+        }
+
+    for vote in votes:
+        dt = parse_item_dt(vote)
+        if not dt:
+            continue
+        minutes_since = (now - dt).total_seconds() / 60
+        if 0 <= minutes_since <= 30:
+            return {
+                "where_to_be_now": "Hallway reaction routes near chamber exits and Ohio Clock",
+                "movement": "Watch",
+                "watch": "Post-vote reactions from sponsors, opponents, leadership, and absences.",
+            }
+
+    for item in items:
+        if item.source != "EBB":
+            continue
+        dt = parse_item_dt(item)
+        if not dt:
+            continue
+        minutes_until = (dt - now).total_seconds() / 60
+        if 0 <= minutes_until <= 30:
+            where = item.location if item.location and item.location != "Location not parsed" else item.where_to_be
+            return {
+                "where_to_be_now": where,
+                "movement": "Move now",
+                "watch": "EBB-timed event window is within 30 minutes.",
+            }
+
+    return {
+        "where_to_be_now": "No immediate floor or EBB trigger",
+        "movement": "Monitor",
+        "watch": "Monitor feeds for next vote or EBB timing signal.",
+    }
+
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
     if groups.get("Votes"):
         return "Floor activity detected. Best access windows are likely around votes, chamber exits, and leadership routes."
@@ -1086,6 +1145,7 @@ def dashboard(
 
         now_item = important_now(items)
         next_items = next_90(items)
+        top_banner = movement_banner(items)
 
         today = datetime.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
 
@@ -1351,11 +1411,11 @@ def dashboard(
                 </div>
 
                 <div class="ticker">
-                    <strong>Where to be:</strong> {html.escape(now_item.where_to_be if now_item else "No active coverage cue detected.")}
+                    <strong>Where to be now:</strong> {html.escape(top_banner["where_to_be_now"])}
                     <br>
-                    <strong>Movement:</strong> {html.escape(now_item.movement_cue if now_item else "No immediate movement cue.")}
+                    <strong>Movement:</strong> {html.escape(top_banner["movement"])}
                     <br>
-                    <strong>Watch:</strong> {html.escape(now_item.who_to_watch if now_item else "N/A")}
+                    <strong>Watch:</strong> {html.escape(top_banner["watch"])}
                 </div>
 
                 <div class="status">
