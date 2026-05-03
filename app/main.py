@@ -123,7 +123,7 @@ def parse_date(line: str) -> Optional[date]:
 
 def parse_time(line: str) -> Optional[time]:
     m = re.search(
-        r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.m\.|p\.m\.|AM|PM|am|pm)\b",
+        r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)\b",
         line,
         re.I,
     )
@@ -640,22 +640,27 @@ def infer_ebb_title(text: str) -> str:
     return "Senate Event"
 
 
+def extract_ebb_room(text: str) -> Optional[str]:
+    m = re.search(r"\b(?:SD|SH|SR|S)-?\s?\d{1,4}[A-Z]?\b", text, flags=re.I)
+    if not m:
+        return None
+    return normalize_room(m.group(0))
+
+
 def infer_ebb_committee(text: str) -> Optional[str]:
-    committees = [
-        "Appropriations", "Armed Services", "Banking", "Budget", "Commerce",
-        "Energy and Natural Resources", "Environment and Public Works",
-        "Finance", "Foreign Relations", "Health, Education, Labor, and Pensions",
-        "HELP", "Homeland Security", "Judiciary", "Rules", "Small Business",
-        "Veterans' Affairs", "Agriculture", "Intelligence", "Aging",
+    patterns = [
+        r"\bSenate\s+Committee\s+on\s+([A-Za-z0-9 ,.&'/-]+?)(?:\s+(?:will|to|for|at)\b|$)",
+        r"\bCommittee\s+on\s+([A-Za-z0-9 ,.&'/-]+?)(?:\s+(?:will|to|for|at)\b|$)",
+        r"\bCommittee\s+of\s+([A-Za-z0-9 ,.&'/-]+?)(?:\s+(?:will|to|for|at)\b|$)",
     ]
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            return f"Committee on {clean(m.group(1))[:90]}"
 
-    for committee in committees:
-        if re.search(re.escape(committee), text, flags=re.I):
-            return committee
-
-    m = re.search(r"Committee on ([A-Za-z ,&'-]+)", text, flags=re.I)
+    m = re.search(r"\b(Appropriations|Armed Services|Banking(?:, Housing, and Urban Affairs)?|Budget|Commerce(?:, Science, and Transportation)?|Energy and Natural Resources|Environment and Public Works|Finance|Foreign Relations|Health, Education, Labor, and Pensions|HELP|Homeland Security(?: and Governmental Affairs)?|Judiciary|Rules(?: and Administration)?|Small Business(?: and Entrepreneurship)?|Veterans'? Affairs|Agriculture(?:, Nutrition, and Forestry)?|Intelligence|Aging)\b", text, flags=re.I)
     if m:
-        return "Committee on " + clean(m.group(1))[:80]
+        return clean(m.group(1))
 
     return None
 
@@ -673,7 +678,7 @@ def split_ebb_events(text: str) -> List[str]:
     )
 
     text = re.sub(
-        r"(?=(?:Stakeout|Press Conference|Media Availability|Briefing|Hearing|Business Meeting|Markup|Photo Spray|Camera Spray)\b)",
+        r"(?=\b(?:stakeout|press conference|media availability|briefing|hearing|business meeting|markup|photo spray|camera spray)\b)",
         "\n",
         text,
         flags=re.I,
@@ -713,15 +718,19 @@ def split_ebb_events(text: str) -> List[str]:
 def classify_ebb(raw: str) -> Dict[str, str]:
     raw = normalize_ebb_location_text(raw)
     title = infer_ebb_title(raw)
-    location = infer_location(raw)
+    location = extract_ebb_room(raw) or infer_location(raw)
     building = infer_building(location)
     committee = infer_ebb_committee(raw)
     lower = raw.lower()
+    parsed_time = parse_time(raw)
 
-    if location:
+    if parsed_time and location:
         confidence = "high"
-        quality = "structured time/location parsed" if parse_time(raw) else "structured location parsed"
-    elif parse_time(raw):
+        quality = "structured time and location parsed"
+    elif location:
+        confidence = "high"
+        quality = "structured location parsed"
+    elif parsed_time:
         confidence = "medium"
         quality = "time parsed; location missing"
     else:
@@ -731,7 +740,7 @@ def classify_ebb(raw: str) -> Dict[str, str]:
     urgency = "scheduled"
 
     if any(x in lower for x in ["stakeout", "press conference", "media availability", "camera spray", "photo spray"]):
-        urgency = "move now" if parse_time(raw) else "watch"
+        urgency = "move now" if parsed_time else "watch"
 
     if location:
         where = location
@@ -1027,6 +1036,65 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
     return sorted(out, key=lambda x: x.sort_datetime or "9999")[:6]
 
 
+
+
+def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
+    now = datetime.now()
+
+    def parse_item_dt(item: JoltItem) -> Optional[datetime]:
+        if not item.sort_datetime:
+            return None
+        try:
+            dt = datetime.fromisoformat(item.sort_datetime)
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt
+        except ValueError:
+            return None
+
+    votes = [x for x in items if x.category == "Votes"]
+    active_votes = [x for x in votes if x.status != "historical"]
+
+    if active_votes:
+        return {
+            "where_to_be_now": "Ohio Clock / chamber exits",
+            "movement": "Move now",
+            "watch": "Active floor vote window; watch leadership, sponsors, and swing votes.",
+        }
+
+    for vote in votes:
+        dt = parse_item_dt(vote)
+        if not dt:
+            continue
+        minutes_since = (now - dt).total_seconds() / 60
+        if 0 <= minutes_since <= 30:
+            return {
+                "where_to_be_now": "Hallway reaction routes near chamber exits and Ohio Clock",
+                "movement": "Watch",
+                "watch": "Post-vote reactions from sponsors, opponents, leadership, and absences.",
+            }
+
+    for item in items:
+        if item.source != "EBB":
+            continue
+        dt = parse_item_dt(item)
+        if not dt:
+            continue
+        minutes_until = (dt - now).total_seconds() / 60
+        if 0 <= minutes_until <= 30:
+            where = item.location if item.location and item.location != "Location not parsed" else item.where_to_be
+            return {
+                "where_to_be_now": where,
+                "movement": "Move now",
+                "watch": "EBB-timed event window is within 30 minutes.",
+            }
+
+    return {
+        "where_to_be_now": "No immediate floor or EBB trigger",
+        "movement": "Monitor",
+        "watch": "Monitor feeds for next vote or EBB timing signal.",
+    }
+
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
     if groups.get("Votes"):
         return "Floor activity detected. Best access windows around votes and chamber exits."
@@ -1168,6 +1236,7 @@ def dashboard(
         now_item = important_now(items)
         ticker = movement_ticker(items)
         next_items = next_90(items)
+        top_banner = movement_banner(items)
 
         today = datetime.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
 
@@ -1434,11 +1503,11 @@ def dashboard(
                 </div>
 
                 <div class="ticker">
-                    <strong>Where to be:</strong> {html.escape(ticker["where"])}
+                    <strong>Where to be now:</strong> {html.escape(top_banner["where_to_be_now"])}
                     <br>
-                    <strong>Movement instruction:</strong> {html.escape(ticker["movement"])}
+                    <strong>Movement:</strong> {html.escape(top_banner["movement"])}
                     <br>
-                    <strong>Who to watch:</strong> {html.escape(ticker["watch"])}
+                    <strong>Watch:</strong> {html.escape(top_banner["watch"])}
                 </div>
 
                 <div class="status">
