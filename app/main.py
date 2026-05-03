@@ -606,6 +606,7 @@ def parse_date(line: str) -> Optional[date]:
     patterns = [
         r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})",
         r"\b([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})\b",
+        r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",
     ]
 
     for pattern in patterns:
@@ -616,6 +617,8 @@ def parse_date(line: str) -> Optional[date]:
         try:
             if len(m.groups()) == 4:
                 return datetime.strptime(f"{m.group(2)} {m.group(3)} {m.group(4)}", "%B %d %Y").date()
+            if pattern.endswith("(\d{4})\b") and len(m.groups())==3 and m.group(1).isdigit():
+                return datetime.strptime(f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}", "%m/%d/%Y").date()
             return datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%B %d %Y").date()
         except ValueError:
             continue
@@ -1434,30 +1437,46 @@ def split_ebb_events(text: str) -> List[str]:
 
 
 def parse_ebb_structured_fields(raw: str) -> Dict[str, str]:
-    fields = {"date": "", "time": "", "location": "", "title": "", "description": ""}
+    fields = {"event_date": "", "event_time": "", "location": "", "title": "", "description": "", "chamber": ""}
     if not raw:
         return fields
-    for key in fields.keys():
-        m = re.search(rf"\b{key}\s*:\s*(.+?)(?=(?:\b(?:date|time|location|title|description)\s*:)|$)", raw, flags=re.I)
+
+    aliases = {
+        "event_date": ["event date", "date"],
+        "event_time": ["event time", "time"],
+        "location": ["location"],
+        "title": ["title", "event", "subject"],
+        "description": ["description", "details", "note"],
+        "chamber": ["chamber"],
+    }
+    field_tokens = "|".join(re.escape(a) for names in aliases.values() for a in names)
+    for field, names in aliases.items():
+        name_pattern = "|".join(re.escape(n) for n in names)
+        pattern = rf"(?:^|\b)(?:{name_pattern})\s*:\s*(.+?)(?=(?:\b(?:{field_tokens})\s*:)|$)"
+        m = re.search(pattern, raw, flags=re.I)
         if m:
-            fields[key] = clean(m.group(1))
+            fields[field] = clean(m.group(1))
+
+    if not fields["title"]:
+        inferred = infer_ebb_title(raw)
+        fields["title"] = "" if inferred == "EBB Event" else inferred
     return fields
 
 
 def infer_ebb_chamber(structured: Dict[str, str], raw: str) -> str:
-    title = (structured.get("title") or "").lower()
-    location = (structured.get("location") or "").lower()
-    description = (structured.get("description") or "").lower()
-    raw_lower = (raw or "").lower()
-    if "house floor" in title or "house floor" in location or "the house meets" in description or "the house meets" in raw_lower:
+    combined = " ".join([structured.get("chamber") or "", structured.get("title") or "", structured.get("location") or "", structured.get("description") or "", raw or ""]).lower()
+    house_only_markers = ["house floor", "the house meets", "house pro forma", "house schedule"]
+    if any(marker in combined for marker in house_only_markers):
         return "House"
+    if "joint" in combined or "bicameral" in combined or ("house" in combined and "senate" in combined):
+        return "Joint"
     return "Senate"
 
 
 def is_joint_or_senate_relevant_ebb(structured: Dict[str, str], raw: str) -> bool:
-    lower = " ".join([raw or "", structured.get("title") or "", structured.get("description") or ""]).lower()
-    senate_joint_terms = ["joint", "bicameral", "conference committee", "state of the union", "senate"]
-    return any(term in lower for term in senate_joint_terms)
+    lower = " ".join([raw or "", structured.get("title") or "", structured.get("description") or "", structured.get("location") or ""]).lower()
+    senate_relevant_terms = ["senate", "senate committee", "senate radio/tv", "senate radio", "senate tv", "senate studio", "s-325", "sd-", "sh-", "sr-", "capitol", "joint", "bicameral", "conference committee", "state of the union"]
+    return any(term in lower for term in senate_relevant_terms)
 
 
 def classify_ebb(raw: str) -> Dict[str, str]:
@@ -1596,11 +1615,21 @@ def fetch_ebb_items() -> List[JoltItem]:
 
     for raw in raw_events:
         structured = parse_ebb_structured_fields(raw)
-        d = parse_date(structured.get("date") or "") or parse_date(raw) or today
-        t = parse_time(structured.get("time") or "") or parse_time(raw)
+        d = parse_date(structured.get("event_date") or "") or parse_date(raw)
+        t = parse_time(structured.get("event_time") or "") or parse_time(raw)
         c = classify_ebb(raw)
         chamber = c.get("chamber", "Senate")
-        if chamber == "House" and not is_joint_or_senate_relevant_ebb(structured, raw):
+        has_useful_description = bool(clean(structured.get("description") or "")) and clean(structured.get("description") or "").lower() not in {"tbd", "n/a", "none"}
+        has_minimum_fields = bool(structured.get("title") and structured.get("location") and d and has_useful_description)
+        if chamber == "House":
+            continue
+        if chamber not in {"Senate", "Joint"}:
+            continue
+        if not is_joint_or_senate_relevant_ebb(structured, raw):
+            continue
+        if not has_minimum_fields:
+            continue
+        if (structured.get("title") or "").strip().lower() == "ebb event":
             continue
         senators = detect_senators(raw)
         committee = infer_ebb_committee(raw)
