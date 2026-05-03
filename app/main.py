@@ -1287,7 +1287,7 @@ def get_all_items() -> List[JoltItem]:
         elif item.category == "Votes":
             item.action_line = "Use the post-vote hallway window for reaction."
         elif item.category in {"Committee Meetings & Hearings"} or ("hearing" in item.title.lower()):
-            item.action_line = "Stage outside the committee room before and after the hearing."
+            item.action_line = "Coverage typically centers near the committee room before and after the hearing."
         elif item.source == "EBB" and item.location and item.location != "Location not parsed":
             item.action_line = f"Stage at {item.location} before the posted event time."
         elif item.source == "EBB":
@@ -1661,6 +1661,22 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         </div>
         """
 
+    generic_access_notes = {
+        "High-interest coverage may occur around public-facing Senate coverage locations.",
+        "Coverage should be coordinated through the appropriate Gallery or committee contact.",
+        "Use authorized public-facing stakeout areas.",
+        "Monitor public floor updates and official sources.",
+    }
+    generic_rules_notes = {
+        "Timing can change based on floor proceedings and official direction.",
+        "Committee direction and room capacity may affect coverage.",
+        "Avoid obstructing pedestrian flow and follow Gallery positioning guidance.",
+        "Coverage remains subject to Senate rules and Gallery guidance.",
+    }
+    access_note_line = f"<div><strong>Access note:</strong> {html.escape(item.access_note)}</div>" if item.access_note and item.access_note not in generic_access_notes else ""
+    rules_note_line = f"<div><strong>Rules note:</strong> {html.escape(item.rules_note)}</div>" if item.rules_note and item.rules_note not in generic_rules_notes else ""
+    pool_note_line = f"<div><strong>Pool note:</strong> {html.escape(item.pool_note)}</div>" if item.pool_note and item.pool_note != "No pool note." else ""
+
     return f"""
     <article class="card">
         <div class="row">
@@ -1685,9 +1701,9 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             {press_line}{cov_line}
             {f"<div><strong>Legislative context:</strong> {html.escape(item.legislative_context)}</div>" if item.legislative_context else ""}
             {f"<div><strong>Why it matters:</strong> {html.escape(item.public_value)}</div>" if item.public_value else ""}
-            {f"<div><strong>Access note:</strong> {html.escape(item.access_note)}</div>" if item.access_note else ""}
-            {f"<div><strong>Rules note:</strong> {html.escape(item.rules_note)}</div>" if item.rules_note else ""}
-            {f"<div><strong>Pool note:</strong> {html.escape(item.pool_note)}</div>" if item.pool_note else ""}
+            {access_note_line}
+            {rules_note_line}
+            {pool_note_line}
         </div>
         {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>View on Congress.gov</a>" if item.measure else ""}
         {official_context}
@@ -2112,14 +2128,10 @@ def dashboard(
                 <div class="searchbox">
                     <form method="get">
                         <input name="q" placeholder="Search senators, committees, topics, bills, or events" value="{html.escape(q or '')}">
-                        <input type="hidden" name="view" value="{html.escape(view)}">
                         <button>Search</button>
                     </form>
                     <div class="views">
-                        <a href="/?view=reporter">Reporter</a>
-                        <a href="/?view=staff">Legislative</a>
-                        <a href="/?view=gallery">Gallery</a>
-                        <a href="/?earlier=true&view={html.escape(view)}">Show Earlier Activity</a>
+                        <a href="/?earlier=true">Show Earlier Activity</a>
                     </div>
                 </div>
                 {f"<p class='empty'>No matching JOLT items found. Try Senator, state, committee, room, bill number, vote, or topic.</p>" if q and not items else ""}
@@ -2127,20 +2139,14 @@ def dashboard(
                 <div class="ticker">
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
-                <div class="status">
-                    {status_bar}
-                </div>
-
                 <div class="outlook">
                     <strong>Today’s Coverage Outlook:</strong> {html.escape(outlook)}
                 </div>
 
                 <div class="summary">
-                    <div class="stat"><b>{len(items)}</b>Active</div>
+                    <div class="stat"><b>{len(items)}</b>Active Signals</div>
                     <div class="stat"><b>{len(groups.get("Votes", []))}</b>Votes</div>
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
-                    <div class="stat"><b>{len(groups.get("Coverage Timeline", []))}</b>Timeline</div>
-                    <div class="stat"><b>{len([x for x in items if x.urgency == "move now"])}</b>Move Now</div>
                 </div>
 
                 <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
