@@ -327,6 +327,31 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         except ValueError:
             return None
 
+    def valid_sentence(s: str) -> bool:
+        if not s:
+            return False
+        s = clean(s)
+        if len(s) < 12:
+            return False
+        return s[-1] in ".!?"
+
+    def strip_timing_constraints(s: str) -> str:
+        s = re.sub(r",?\s*no earlier than\s+[^,.;]+", "", s, flags=re.I)
+        s = re.sub(r",?\s*not earlier than\s+[^,.;]+", "", s, flags=re.I)
+        return clean(s.strip(" ,.;"))
+
+    def shorten_nomination(v: str) -> str:
+        v = clean(v)
+        m = re.search(r"(Executive Calendar\s*#\d+\s+)(.+)", v, flags=re.I)
+        if not m:
+            return v
+        desc = m.group(2)
+        for splitter in [" to be ", " of ", " for ", " as "]:
+            if splitter in desc.lower():
+                idx = desc.lower().index(splitter)
+                return clean(m.group(1) + desc[:idx])
+        return v
+
     accepted_parts: List[str] = []
     for block in blocks or [cleaned]:
         l = block.lower()
@@ -356,8 +381,6 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         t = parse_time(snippet)
         if not d or d < today:
             continue
-        if d.year > today.year and str(d.year) not in accepted:
-            continue
         key = (d.isoformat(), fmt_time(t) or "")
         if key in pro_forma_seen:
             continue
@@ -367,50 +390,74 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     next_convening = {}
     m = re.search(r"(?:will next convene|next convene at)\s+at?\s*(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).*?on\s+((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)", accepted, flags=re.I)
     if m:
-        snippet = clean(m.group(0))
         d = parse_schedule_date(m.group(2))
         t = parse_time(m.group(1))
         if d and d >= today:
-            next_convening = {"text": snippet, "date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t), "date_obj": d}
+            next_convening = {"date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t), "date_obj": d}
+
+    floor_schedule = []
+    if re.search(r"following\s+leader\s+remarks", accepted, flags=re.I):
+        floor_schedule.append("Leader remarks")
+    if re.search(r"morning\s+business", accepted, flags=re.I):
+        floor_schedule.append("Morning business")
 
     vote_block = {}
-    m = re.search(r"At approximately\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).{0,120}?will vote", accepted, flags=re.I)
-    if m:
-        t = parse_time(m.group(1))
-        d = next_convening.get("date_obj") if next_convening else None
-        vote_block = {"text": clean(m.group(0)), "date": d.isoformat() if d else "", "time": fmt_time(t) if t else "", "date_label": fmt_date(d) if d else "", "time_label": f"approx. {fmt_time(t)}" if t else "", "sort_datetime": sort_dt(d, t) if d and t else ""}
+    override = re.search(r"(\d+)\s+roll\s+call\s+votes?\s+expected", accepted, flags=re.I)
+    block_match = re.search(r"At approximately\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).{0,200}?will vote", accepted, flags=re.I)
+    block_time = parse_time(block_match.group(1)) if block_match else None
+    if block_time and next_convening:
+        vote_block = {
+            "date": next_convening["date"],
+            "time": fmt_time(block_time),
+            "date_label": next_convening["date_label"],
+            "time_label": f"approx. {fmt_time(block_time)}",
+            "roll_call_votes_expected": int(override.group(1)) if override else None,
+        }
 
     expected_votes = []
     cloture_filed = []
     seen_votes = set()
+    first_nomination = None
     for sent in re.split(r"(?<=[.])\s+", accepted):
         s = clean(sent)
+        if not valid_sentence(s):
+            continue
         ls = s.lower()
         if any(x in ls for x in ["wrap up for", "for a term of", "term expiring", "confirmed:", "agreed to:", "the senate is now voting"]):
             continue
         candidate = None
         if "will vote on" in ls:
-            candidate = clean(s.split("will vote on",1)[1].strip().rstrip("."))
-            if candidate.lower().startswith("adoption of"):
-                candidate = candidate[0].upper()+candidate[1:]
-        elif "motion to invoke cloture" in ls and ("will vote" in ls or "following disposition" in ls):
+            candidate = clean(s.split("will vote on", 1)[1].strip().rstrip("."))
+        elif "vote on the motion to invoke cloture" in ls:
             m2 = re.search(r"(motion to invoke cloture[^.]+)", s, flags=re.I)
-            candidate = clean(m2.group(1)) if m2 else clean(s.rstrip('.'))
-            candidate = candidate[0].upper()+candidate[1:]
-        if candidate and len(candidate) > 20:
+            candidate = clean(m2.group(1) if m2 else s).rstrip(".")
+        if candidate:
+            candidate = strip_timing_constraints(candidate)
+            if candidate.lower().startswith("adoption of"):
+                candidate = candidate[0].upper() + candidate[1:]
+            short_candidate = shorten_nomination(candidate)
+            if first_nomination and short_candidate.lower() == first_nomination.lower():
+                candidate = short_candidate
+            elif "executive calendar" in short_candidate.lower() and not first_nomination:
+                first_nomination = short_candidate
+            elif first_nomination and "executive calendar" in candidate.lower():
+                candidate = short_candidate
             k = candidate.lower()
-            if k not in seen_votes:
+            if k and k not in seen_votes:
                 seen_votes.add(k)
                 expected_votes.append(candidate)
         if "filed cloture" in ls or "cloture filed" in ls:
-            cloture_filed.append(s.rstrip("."))
+            cf = strip_timing_constraints(s.rstrip("."))
+            if valid_sentence(cf + "."):
+                cloture_filed.append(cf)
 
     return {
         "pro_formas": pro_formas[:6],
         "next_convening": {k:v for k,v in next_convening.items() if k!="date_obj"},
+        "floor_schedule": floor_schedule,
         "vote_block": vote_block,
         "expected_votes": expected_votes[:8],
-        "cloture_filed": cloture_filed[:8],
+        "cloture_filed": list(dict.fromkeys(cloture_filed))[:8],
         "source_label": "Public schedule source",
         "source_url": CONGRESSIONAL_REPORTERS_URL,
         "ignored_dates": sorted(set(ignored_dates)),
