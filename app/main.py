@@ -99,25 +99,32 @@ class JoltItem:
     time_label: Optional[str]
     sort_datetime: Optional[str]
     category: str
+    coverage_type: str = "floor update"
     title: str
     urgency: str
     status: str
     confidence: str
     quality: str
     location: Optional[str]
+    coverage_location: Optional[str] = None
     building: Optional[str]
     measure: Optional[str]
     takeaway: str
     where_to_be: str
     movement_cue: str
+    coverage_action: str = ""
     who_to_watch: str
     coverage_note: str
     staff_note: str
+    context_note: str = ""
     gallery_note: str
+    gallery_guidance: str = ""
     senators_detected: List[str]
     coverage_target: Optional[str]
     press_availability: str
     best_window: str
+    coverage_window: str = "none"
+    visibility_level: str = "Low"
     event_type: Optional[str]
     committee: Optional[str]
     url: Optional[str]
@@ -137,6 +144,17 @@ class JoltItem:
     movement_status: str = "Monitor"
     coverage_value: str = "Low"
     suppressed: bool = False
+    public_value: str = ""
+    legislative_context: str = ""
+    access_note: str = ""
+    rules_note: str = ""
+    pool_note: str = ""
+    procedure_stage: Optional[str] = None
+    vote_status: Optional[str] = None
+    chamber_phase: Optional[str] = None
+    outcome_stage: Optional[str] = None
+    official_context: Dict[str, Any] = None
+    links: List[Dict[str, str]] = None
 
 
 SOURCE_STATUS = {
@@ -1247,6 +1265,7 @@ def get_all_items() -> List[JoltItem]:
             item.action_line = "Monitor for hallway follow-up if tied to active floor business."
         else:
             item.action_line = clean(item.movement_cue) or "Monitor floor updates, EBB, and committee schedule."
+        enrich_public_fields(item)
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
     return items
@@ -1372,6 +1391,73 @@ def score_signal(item: JoltItem) -> int:
     if any(t in topic for t in HIGH_INTEREST_TOPICS): score += 15
     score += {"Congressional Reporters": 12, "EBB": 18, "Congress.gov API": 15}.get(item.source, 15 if "senate.gov" in (item.url or "").lower() else 0)
     return max(0, min(100, int(score)))
+
+
+def enrich_public_fields(item: JoltItem) -> None:
+    raw = f"{item.title} {item.raw}".lower()
+    item.coverage_location = item.location if item.location and item.location != "Location not parsed" else (item.where_to_be or None)
+    item.coverage_action = item.action_line or item.movement_cue
+    item.context_note = item.staff_note
+    item.gallery_guidance = item.gallery_note
+    item.coverage_window = "post-event" if item.status == "historical" else "underway" if "now voting" in raw else "upcoming" if item.time_label else "rolling"
+    if item.status == "historical":
+        item.coverage_window = "earlier"
+    if not item.time_label:
+        item.coverage_window = "none" if item.status == "historical" else item.coverage_window
+    item.coverage_type = "vote" if item.category == "Votes" else "hearing" if "hearing" in raw else "stakeout" if "stakeout" in raw else "press conference" if "press conference" in raw else "floor update"
+    if any(x in raw for x in ["roll call", "recorded vote", "cloture vote", "press conference", "media availability", "stakeout"]):
+        item.visibility_level = "High"
+    elif any(x in raw for x in ["hearing", "markup", "nomination", "remarks"]) or item.senators_detected:
+        item.visibility_level = "Medium"
+    else:
+        item.visibility_level = "Low"
+    if "recorded vote" in raw or "roll call" in raw:
+        item.public_value = "A recorded vote creates a clear public accountability and coverage window."
+    elif "voice vote" in raw:
+        item.public_value = "The Senate acted without a recorded vote; this may be lower visibility unless the matter is high-profile."
+    else:
+        item.public_value = item.takeaway
+    item.legislative_context = "The Senate is considering bills, resolutions, or related legislative business."
+    if "motion to invoke cloture" in raw:
+        item.procedure_stage, item.outcome_stage, item.vote_status = "cloture vote", "procedural", "scheduled"
+        item.legislative_context = "The Senate is voting on whether to limit debate."
+    elif "invoked cloture" in raw:
+        item.procedure_stage, item.outcome_stage = "post-cloture", "advancing"
+        item.legislative_context = "Debate is now limited; the Senate is moving toward final action or disposition."
+    elif "filed cloture" in raw or "file cloture" in raw:
+        item.procedure_stage, item.outcome_stage = "pre-cloture", "procedural"
+        item.legislative_context = "Cloture has been filed, beginning the process that may lead to a later vote to limit debate."
+    elif "motion to proceed" in raw:
+        item.outcome_stage = "procedural"
+        item.legislative_context = "The Senate is considering whether to take up the measure."
+    if "adjourn" in raw:
+        item.chamber_phase = "adjourned"
+    elif "recess" in raw:
+        item.chamber_phase = "recess"
+    elif "executive session" in raw:
+        item.chamber_phase = "executive session"
+    if item.coverage_type == "vote":
+        item.access_note = "High-interest coverage may occur around public-facing Senate coverage locations."
+        item.rules_note = "Timing can change based on floor proceedings and official instructions."
+        item.pool_note = "Pool coverage may apply for unusually high-interest events."
+    elif item.coverage_type == "hearing":
+        item.access_note = "Coverage should be coordinated through the appropriate Gallery or committee contact."
+        item.rules_note = "Committee direction and room capacity may affect coverage."
+        item.pool_note = "Pool coverage may apply for high-interest or capacity-limited hearings."
+    elif item.coverage_type in {"stakeout", "press conference"}:
+        item.access_note = "Use authorized public-facing stakeout areas."
+        item.rules_note = "Avoid obstructing pedestrian flow and follow Gallery positioning guidance."
+        item.pool_note = "Pool arrangements may apply depending on space and interest."
+    else:
+        item.access_note = "Monitor public floor updates and official sources."
+        item.rules_note = "Coverage remains subject to Senate rules and Gallery guidance."
+        item.pool_note = "No pool note."
+    item.official_context = {
+        "bill_title": item.congress_bill_title,
+        "latest_action": item.congress_latest_action,
+        "policy_area": item.congress_policy_area,
+    }
+    item.links = [{"label": "Source", "url": item.url or ""}] + ([{"label": "Congress.gov", "url": item.congress_url}] if item.congress_url else [])
 
 
 def important_now(items: List[JoltItem]) -> Optional[JoltItem]:
@@ -1509,7 +1595,7 @@ def badge_class(urgency: str) -> str:
 
 def item_card(item: JoltItem, view: str = "reporter") -> str:
     when = " ".join(x for x in [item.time_label, item.date_label] if x) or "Time TBD"
-    place = item.location if item.location and item.location != "Location not parsed" else item.where_to_be
+    place = item.coverage_location or "No active location"
     building = f"<div><strong>Building:</strong> {html.escape(item.building)}</div>" if item.building else ""
     measure = f"<span class='pill'>{html.escape(item.measure)}</span>" if item.measure else ""
     senators_line = ""
@@ -1519,7 +1605,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         heading = "Senator" if len(labels) == 1 else "Senators"
         senators_line = f"<div><strong>{heading}:</strong> {html.escape(', '.join(labels))}</div>" if labels else ""
         speaker_line = f"<div><strong>Speaker:</strong> {html.escape(labels[0])}</div>" if labels else ""
-    coverage_line = f"<div><strong>Coverage target:</strong> {html.escape(item.coverage_target)}</div>" if item.coverage_target else ""
+    coverage_line = f"<div><strong>Coverage type:</strong> {html.escape(item.coverage_type)}</div>" if item.coverage_target else ""
     press_line = f"<div><strong>Press availability:</strong> {html.escape(item.press_availability)}</div>" if item.press_availability in {"Medium", "High"} else ""
     cov_value = coverage_value_for_item(item)
     cov_line = f"<div><strong>Coverage value:</strong> {html.escape(cov_value)}</div>" if cov_value in {"Medium", "High"} else ""
@@ -1547,7 +1633,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     return f"""
     <article class="card">
         <div class="row">
-            <span class="badge {badge_class(item.urgency)}">{html.escape(item.urgency)}</span>
+            <span class="badge {badge_class(item.urgency)}">{html.escape(item.action_confidence)}</span>
             <span class="meta">{html.escape(item.source)} · {html.escape(item.status)} · {html.escape(item.confidence)}</span>
         </div>
         <h3>{html.escape(item.title)}</h3>
@@ -1555,9 +1641,10 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         {measure}
         <p>{html.escape(item.takeaway)}</p>
         <div class="logistics">
-            <div><strong>Location:</strong> {html.escape(place)}</div>
+            <div><strong>Coverage location:</strong> {html.escape(place)}</div>
+            <div><strong>Coverage window:</strong> {html.escape(item.coverage_window)}</div>
             {building}
-            <div><strong>Action:</strong> {html.escape(item.action_line or item.movement_cue)}</div>
+            <div><strong>Coverage action:</strong> {html.escape(item.coverage_action or item.action_line or item.movement_cue)}</div>
             <div><strong>Watch:</strong> {html.escape(item.who_to_watch)}</div>
             {speaker_line}
             {senators_line}
@@ -1565,6 +1652,11 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             {f"<div><strong>Measure:</strong> {html.escape(item.measure)}</div>" if item.measure else ""}
             {coverage_line}
             {press_line}{cov_line}
+            {f"<div><strong>Legislative context:</strong> {html.escape(item.legislative_context)}</div>" if item.legislative_context else ""}
+            {f"<div><strong>Public value:</strong> {html.escape(item.public_value)}</div>" if item.public_value else ""}
+            {f"<div><strong>Access note:</strong> {html.escape(item.access_note)}</div>" if item.access_note else ""}
+            {f"<div><strong>Rules note:</strong> {html.escape(item.rules_note)}</div>" if item.rules_note else ""}
+            {f"<div><strong>Pool note:</strong> {html.escape(item.pool_note)}</div>" if item.pool_note else ""}
         </div>
         {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>View on Congress.gov</a>" if item.measure else ""}
         {official_context}
@@ -1931,6 +2023,7 @@ def dashboard(
                         <a href="/?earlier=true&view={html.escape(view)}">Show Earlier Activity</a>
                     </div>
                 </div>
+                {f"<p class='empty'>No matching JOLT items found. Try Senator, state, committee, room, bill number, vote, or topic.</p>" if q and not items else ""}
 
                 <div class="ticker">
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(top_banner["movement"])}<br>Location: {html.escape(top_banner["where_to_be_now"])}<br>Window: {"next 30" if next_items else "None"}<br>Watch: {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule")}<br>Reason: {html.escape(top_banner["watch"])}<br><strong>NEXT MOVE</strong><br>{html.escape(next_items[0].action_line if next_items else "Monitor floor updates, EBB, and committee schedule.")}</div>
@@ -1970,6 +2063,7 @@ def dashboard(
                     {quick_links}
                     <details class="admin"><summary>Admin / Diagnostics</summary><p><a href="/events">Events JSON</a> · <a href="/summary">Summary JSON</a> · <a href="/debug/raw">Debug Raw</a> · <a href="/health">Health</a></p></details>
                 </div>
+                <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official instructions. This site does not provide security guidance, restricted-access information, or nonpublic operational details.</p></section>
             </main>
         </body>
         </html>
