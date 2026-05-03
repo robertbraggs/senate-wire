@@ -1264,7 +1264,7 @@ def get_all_items() -> List[JoltItem]:
         elif item.category == "Remarks":
             item.action_line = "Monitor for hallway follow-up if tied to active floor business."
         else:
-            item.action_line = clean(item.movement_cue) or "Monitor floor updates, EBB, and committee schedule."
+            item.action_line = clean(item.movement_cue) or "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities."
         enrich_public_fields(item)
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
@@ -1438,7 +1438,7 @@ def enrich_public_fields(item: JoltItem) -> None:
         item.chamber_phase = "executive session"
     if item.coverage_type == "vote":
         item.access_note = "High-interest coverage may occur around public-facing Senate coverage locations."
-        item.rules_note = "Timing can change based on floor proceedings and official instructions."
+        item.rules_note = "Timing can change based on floor proceedings and official direction."
         item.pool_note = "Pool coverage may apply for unusually high-interest events."
     elif item.coverage_type == "hearing":
         item.access_note = "Coverage should be coordinated through the appropriate Gallery or committee contact."
@@ -1566,7 +1566,7 @@ def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
             }
 
     return {
-        "where_to_be_now": "No active location",
+        "where_to_be_now": "No active coverage location",
         "movement": "Monitor",
         "watch": "No active floor or media-event trigger.",
     }
@@ -1595,7 +1595,7 @@ def badge_class(urgency: str) -> str:
 
 def item_card(item: JoltItem, view: str = "reporter") -> str:
     when = " ".join(x for x in [item.time_label, item.date_label] if x) or "Time TBD"
-    place = item.coverage_location or "No active location"
+    place = item.coverage_location or "No active coverage location"
     building = f"<div><strong>Building:</strong> {html.escape(item.building)}</div>" if item.building else ""
     measure = f"<span class='pill'>{html.escape(item.measure)}</span>" if item.measure else ""
     senators_line = ""
@@ -1644,8 +1644,8 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             <div><strong>Coverage location:</strong> {html.escape(place)}</div>
             <div><strong>Coverage window:</strong> {html.escape(item.coverage_window)}</div>
             {building}
-            <div><strong>Coverage action:</strong> {html.escape(item.coverage_action or item.action_line or item.movement_cue)}</div>
-            <div><strong>Watch:</strong> {html.escape(item.who_to_watch)}</div>
+            <div><strong>Coverage guidance:</strong> {html.escape(item.coverage_action or item.action_line or item.movement_cue)}</div>
+            <div><strong>Who to watch:</strong> {html.escape(item.who_to_watch)}</div>
             {speaker_line}
             {senators_line}
             {f"<div><strong>Topic:</strong> {html.escape(item.topic)}</div>" if item.topic else ""}
@@ -1653,7 +1653,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             {coverage_line}
             {press_line}{cov_line}
             {f"<div><strong>Legislative context:</strong> {html.escape(item.legislative_context)}</div>" if item.legislative_context else ""}
-            {f"<div><strong>Public value:</strong> {html.escape(item.public_value)}</div>" if item.public_value else ""}
+            {f"<div><strong>Why it matters:</strong> {html.escape(item.public_value)}</div>" if item.public_value else ""}
             {f"<div><strong>Access note:</strong> {html.escape(item.access_note)}</div>" if item.access_note else ""}
             {f"<div><strong>Rules note:</strong> {html.escape(item.rules_note)}</div>" if item.rules_note else ""}
             {f"<div><strong>Pool note:</strong> {html.escape(item.pool_note)}</div>" if item.pool_note else ""}
@@ -1669,11 +1669,11 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
 
 def empty_message(title: str) -> str:
     messages = {
-        "Votes": "No active vote window detected. Monitor Congressional Reporters feed and Roll Call Votes.",
-        "News Events & Stakeouts": "No media events parsed. Check EBB for late additions.",
-        "Committee Meetings & Hearings": "No committee hearings parsed. Check Congress.gov Committee Schedule and Senate committee pages.",
+        "Key Votes": "No votes scheduled or underway.",
+        "Events & Stakeouts": "No media events currently scheduled. Check EBB for updates.",
+        "Committee Hearings & Meetings": "No committee hearings or meetings currently scheduled.",
         "Key Floor Remarks": "No key floor remarks detected.",
-        "Legislative Notes": "No legislative notes detected.",
+        "Legislative Context": "No legislative context items detected.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
@@ -2004,29 +2004,29 @@ def dashboard(
             <header>
                 <div class="wrap">
                     <h1>{APP_NAME}</h1>
-                    <div class="sub">{today} · Mobile coverage logistics for reporters, Senate staff, and gallery ops</div>
-                    <div class="sub">Sources: Congressional Reporters + EBB</div>
+                    <div class="sub">{today} · Real-time coverage guidance for congressional reporters</div>
+                    <div class="sub">Sources: Congressional Reporters · EBB · Congress.gov · Committee Schedules</div>
                 </div>
             </header>
 
             <main>
                 <div class="searchbox">
                     <form method="get">
-                        <input name="q" placeholder="Search senator, bill, room, event, vote..." value="{html.escape(q or '')}">
+                        <input name="q" placeholder="Search senators, committees, topics, bills, or events" value="{html.escape(q or '')}">
                         <input type="hidden" name="view" value="{html.escape(view)}">
                         <button>Search</button>
                     </form>
                     <div class="views">
-                        <a href="/?view=reporter">Reporter View</a>
-                        <a href="/?view=staff">Staff View</a>
-                        <a href="/?view=gallery">Gallery Ops View</a>
+                        <a href="/?view=reporter">Reporter</a>
+                        <a href="/?view=staff">Legislative</a>
+                        <a href="/?view=gallery">Gallery</a>
                         <a href="/?earlier=true&view={html.escape(view)}">Show Earlier Activity</a>
                     </div>
                 </div>
                 {f"<p class='empty'>No matching JOLT items found. Try Senator, state, committee, room, bill number, vote, or topic.</p>" if q and not items else ""}
 
                 <div class="ticker">
-                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(top_banner["movement"])}<br>Location: {html.escape(top_banner["where_to_be_now"])}<br>Window: {"next 30" if next_items else "None"}<br>Watch: {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule")}<br>Reason: {html.escape(top_banner["watch"])}<br><strong>NEXT MOVE</strong><br>{html.escape(next_items[0].action_line if next_items else "Monitor floor updates, EBB, and committee schedule.")}</div>
+                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(top_banner["movement"])}<br>Coverage location: {html.escape(top_banner["where_to_be_now"])}<br>Coverage window: {"next 30" if next_items else "None"}<br>Watch: {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule")}<br>Why this matters: {html.escape(top_banner["watch"])}<br><strong>NEXT MOVE</strong><br>{html.escape(next_items[0].action_line if next_items else "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities.")}</div>
 
                 <div class="status">
                     {status_bar}
@@ -2044,18 +2044,16 @@ def dashboard(
                     <div class="stat"><b>{len([x for x in items if x.urgency == "move now"])}</b>Move now</div>
                 </div>
 
-                <section class="section"><h2>Top 3 Actions Right Now</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing movement detected.</p>"}</section>
+                <section class="section"><h2>Top 3 Actions Right Now</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
-                {section("Where to Be Now", [now_item] if now_item else [], view)}
-                {section("Today’s Coverage Outlook", [now_item] if now_item else [], view, collapsed=True)}
-                {section("Senate Floor Schedule", groups.get("Schedule", []), view)}
-                {section("Key Votes and Schedule", groups.get("Votes", []), view)}
-                {section("News Events & Stakeouts", groups.get("Events", []), view)}
-                {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
+                                {section("Senate Floor Activity", groups.get("Schedule", []), view)}
+                {section("Key Votes", groups.get("Votes", []), view)}
+                {section("Events & Stakeouts", groups.get("Events", []), view)}
+                {section("Committee Hearings & Meetings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Staff / Gallery Notes", all_groups.get("Floor Action", []), view, collapsed=True)}
                 {section("Key Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
-                {section("Legislative Notes", all_groups.get("Notes", []), view, collapsed=True)}
-                {section("Earlier Floor Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
+                {section("Legislative Context", all_groups.get("Notes", []), view, collapsed=True)}
+                {section("Earlier Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
                 {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
                 <div class="links">
@@ -2063,7 +2061,7 @@ def dashboard(
                     {quick_links}
                     <details class="admin"><summary>Admin / Diagnostics</summary><p><a href="/events">Events JSON</a> · <a href="/summary">Summary JSON</a> · <a href="/debug/raw">Debug Raw</a> · <a href="/health">Health</a></p></details>
                 </div>
-                <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official instructions. This site does not provide security guidance, restricted-access information, or nonpublic operational details.</p></section>
+                <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide security guidance, restricted-access information, or nonpublic operational details.</p></section>
             </main>
         </body>
         </html>
