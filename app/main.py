@@ -60,6 +60,12 @@ class JoltItem:
     coverage_note: str
     staff_note: str
     gallery_note: str
+    senators_detected: str
+    coverage_target: str
+    press_availability: str
+    best_window: str
+    event_type: Optional[str]
+    committee: Optional[str]
     url: Optional[str]
 
 
@@ -196,7 +202,7 @@ def infer_location(text: str) -> Optional[str]:
         r"\bOhio Clock\b",
         r"\bSenate subway\b",
         r"\bSenate Radio-TV Gallery\b",
-        r"\bSenate Daily Press Gallery\b",
+        r"\bCongressional Reporters Gallery\b",
         r"\bCapitol\s+[A-Z0-9-]+\b",
     ]
 
@@ -223,7 +229,7 @@ def infer_building(location: Optional[str]) -> Optional[str]:
     if loc == "S-325":
         return "Senate Radio-TV Gallery"
     if loc == "S-316":
-        return "Senate Daily Press Gallery"
+        return "Congressional Reporters Gallery"
     if loc.startswith("S-") or "CAPITOL" in loc:
         return "Capitol / Senate side"
     if "OHIO CLOCK" in loc:
@@ -491,6 +497,41 @@ def classify_floor(raw: str) -> Dict[str, str]:
     }
 
 
+
+
+LEADERSHIP_NAMES = ["Thune", "Schumer", "McConnell", "Durbin"]
+
+
+def detect_senators_and_target(text: str, category: str) -> tuple[str, str]:
+    detected = [name for name in LEADERSHIP_NAMES if re.search(rf"\b{name}\b", text, re.I)]
+    senators = ", ".join(detected) if detected else "None"
+    target = "leadership" if detected else ("committee" if category == "Events" else "sponsor")
+    return senators, target
+
+
+def compute_press_availability(item: JoltItem) -> tuple[str, str]:
+    text = f"{item.title} {item.raw}".lower()
+    if any(k in text for k in ["vote underway", "now voting", "cloture", "stakeout", "press conference", "media availability"]):
+        level = "High"
+    elif any(k in text for k in ["unanimous consent", "objected", "hearing", "markup"]):
+        level = "Medium"
+    else:
+        level = "Low"
+
+    if "vote" in text:
+        window = "after vote" if "ended" in text or "by a vote of" in text else "before vote"
+    elif "hearing" in text or "markup" in text:
+        window = "outside hearing room"
+    else:
+        window = "scheduled event location"
+
+    return level, window
+
+
+def normalize_ebb_location_text(text: str) -> str:
+    text = re.sub(r"\b(SD|SH|SR)\s*(\d+[A-Z]?)\b", r"\1-\2", text, flags=re.I)
+    return clean(text)
+
 def apply_past_status(item: JoltItem) -> JoltItem:
     if not item.sort_datetime:
         return item
@@ -522,6 +563,7 @@ def parse_floor_item(raw: str, fallback_date: Optional[date]) -> JoltItem:
     t = parse_time(raw)
     c = classify_floor(raw)
 
+    senators, target = detect_senators_and_target(raw, c["category"])
     item = JoltItem(
         source="Congressional Reporters",
         raw=raw,
@@ -544,6 +586,12 @@ def parse_floor_item(raw: str, fallback_date: Optional[date]) -> JoltItem:
         coverage_note=c["coverage_note"],
         staff_note=c["staff_note"],
         gallery_note=c["gallery_note"],
+        senators_detected=senators,
+        coverage_target=target,
+        press_availability="",
+        best_window="",
+        event_type=None,
+        committee=None,
         url=CONGRESSIONAL_REPORTERS_URL,
     )
 
@@ -663,6 +711,7 @@ def split_ebb_events(text: str) -> List[str]:
 
 
 def classify_ebb(raw: str) -> Dict[str, str]:
+    raw = normalize_ebb_location_text(raw)
     title = infer_ebb_title(raw)
     location = infer_location(raw)
     building = infer_building(location)
@@ -710,7 +759,7 @@ def classify_ebb(raw: str) -> Dict[str, str]:
         "urgency": urgency,
         "status": "confirmed",
         "confidence": confidence,
-        "quality": quality,
+        "quality": quality if (parse_time(raw) and location) else quality,
         "location": location or "Location not parsed",
         "building": building,
         "takeaway": "Media logistics or event item from EBB.",
@@ -720,6 +769,8 @@ def classify_ebb(raw: str) -> Dict[str, str]:
         "coverage_note": "Use event time and location to stage cameras, crews, or reporters before arrivals/exits.",
         "staff_note": "Useful for anticipating press presence, member movement, and committee/event traffic.",
         "gallery_note": "Confirm room, camera setup, credential access, pool needs, and whether gallery support is needed.",
+        "event_type": title,
+        "committee": committee,
     }
 
 
@@ -752,6 +803,12 @@ def fetch_ebb_items() -> List[JoltItem]:
                 coverage_note="EBB events are not available to this app from the current network.",
                 staff_note="Use direct EBB access for confirmed events.",
                 gallery_note="Confirm EBB availability or add a manual events feed.",
+                senators_detected="None",
+                coverage_target="committee",
+                press_availability="Low",
+                best_window="scheduled event location",
+                event_type=None,
+                committee=None,
                 url=EBB_URL,
             )
         ]
@@ -772,6 +829,7 @@ def fetch_ebb_items() -> List[JoltItem]:
         t = parse_time(raw)
         c = classify_ebb(raw)
 
+        senators, target = detect_senators_and_target(raw, "Events")
         item = JoltItem(
             source="EBB",
             raw=shorten(raw, 700),
@@ -794,6 +852,12 @@ def fetch_ebb_items() -> List[JoltItem]:
             coverage_note=c["coverage_note"],
             staff_note=c["staff_note"],
             gallery_note=c["gallery_note"],
+            senators_detected=senators,
+            coverage_target=target,
+            press_availability="",
+            best_window="",
+            event_type=c.get("event_type"),
+            committee=c.get("committee"),
             url=EBB_URL,
         )
 
@@ -836,6 +900,8 @@ def dedupe_items(items: List[JoltItem]) -> List[JoltItem]:
 
 def get_all_items() -> List[JoltItem]:
     items = get_floor_items() + fetch_ebb_items() + fetch_x_items()
+    for item in items:
+        item.press_availability, item.best_window = compute_press_availability(item)
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
     return items
@@ -963,15 +1029,15 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
 
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
     if groups.get("Votes"):
-        return "Floor activity detected. Best access windows are likely around votes, chamber exits, and leadership routes."
+        return "Floor activity detected. Best access windows around votes and chamber exits."
 
     if groups.get("Events"):
-        return "No active vote window detected. Best opportunities may be EBB events, hearings, press availabilities, or committee hallway movement."
+        return "Focus on EBB events, hearings, and press availabilities."
 
     if groups.get("Schedule"):
-        return "Schedule items detected. Use convening times and leader remarks to plan first movement window."
+        return "Plan around convening time and leader remarks."
 
-    return "No current floor movement detected. Check EBB, committee schedule, or the Congressional Reporters feed for the next coverage window."
+    return "Low activity day — monitor for changes and off-floor movement."
 
 
 def badge_class(urgency: str) -> str:
@@ -1010,6 +1076,10 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             {building}
             <div><strong>Movement:</strong> {html.escape(item.movement_cue)}</div>
             <div><strong>Watch:</strong> {html.escape(item.who_to_watch)}</div>
+            <div><strong>Senators detected:</strong> {html.escape(item.senators_detected)}</div>
+            <div><strong>Coverage target:</strong> {html.escape(item.coverage_target)}</div>
+            <div><strong>Press availability:</strong> {html.escape(item.press_availability)}</div>
+            <div><strong>Best window:</strong> {html.escape(item.best_window)}</div>
             <div><strong>Note:</strong> {html.escape(note)}</div>
             <div><strong>Quality:</strong> {html.escape(item.quality)}</div>
         </div>
@@ -1026,7 +1096,7 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
         <section class="section">
             <details>
                 <summary><h2>{html.escape(title)} ({len(items)})</h2></summary>
-                {cards if cards else '<p class="empty">No items detected.</p>'}
+                {cards if cards else '<p class="empty">No current floor movement detected. Check EBB, committee schedule, or Congressional Reporters feed for the next coverage window.</p>'}
             </details>
         </section>
         """
@@ -1036,7 +1106,7 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
     return f"""
     <section class="section">
         <h2>{html.escape(title)}</h2>
-        {cards if cards else '<p class="empty">No items detected.</p>'}
+        {cards if cards else '<p class="empty">No current floor movement detected. Check EBB, committee schedule, or Congressional Reporters feed for the next coverage window.</p>'}
     </section>
     """
 
@@ -1062,6 +1132,26 @@ def gallery_notes_section() -> str:
     """
 
 
+
+
+def movement_ticker(items: List[JoltItem]) -> Dict[str, str]:
+    now = datetime.now()
+    for item in items:
+        text = f"{item.title} {item.raw}".lower()
+        if item.status != "historical" and ("vote underway" in text or "now voting" in text):
+            return {"where": item.where_to_be, "movement": "Move now", "watch": item.who_to_watch}
+        if item.sort_datetime:
+            try:
+                dt = datetime.fromisoformat(item.sort_datetime)
+                mins = (dt - now).total_seconds()/60
+                if 0 <= mins <= 30 and item.category == "Votes":
+                    return {"where": item.where_to_be, "movement": "Prepare to move", "watch": item.who_to_watch}
+                if 0 <= mins <= 30 and item.category == "Events":
+                    return {"where": item.where_to_be, "movement": "Move to event location", "watch": item.who_to_watch}
+            except Exception:
+                pass
+    return {"where": "Monitor floor + EBB", "movement": "Monitor", "watch": "Leadership and committee principals"}
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     q: Optional[str] = Query(None),
@@ -1076,6 +1166,7 @@ def dashboard(
         all_groups = grouped(all_items)
 
         now_item = important_now(items)
+        ticker = movement_ticker(items)
         next_items = next_90(items)
 
         today = datetime.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
@@ -1099,6 +1190,7 @@ def dashboard(
         <head>
             <title>{APP_NAME}</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="60">
             <style>
                 body {{
                     margin: 0;
@@ -1342,11 +1434,11 @@ def dashboard(
                 </div>
 
                 <div class="ticker">
-                    <strong>Where to be:</strong> {html.escape(now_item.where_to_be if now_item else "No active coverage cue detected.")}
+                    <strong>Where to be:</strong> {html.escape(ticker["where"])}
                     <br>
-                    <strong>Movement:</strong> {html.escape(now_item.movement_cue if now_item else "No immediate movement cue.")}
+                    <strong>Movement instruction:</strong> {html.escape(ticker["movement"])}
                     <br>
-                    <strong>Watch:</strong> {html.escape(now_item.who_to_watch if now_item else "N/A")}
+                    <strong>Who to watch:</strong> {html.escape(ticker["watch"])}
                 </div>
 
                 <div class="status">
