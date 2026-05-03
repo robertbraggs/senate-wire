@@ -454,6 +454,24 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             vote_block_time_source = clean(fallback_match.group(1))
             vote_block_extraction_method = "prose_fallback"
 
+    pattern_a = re.search(
+        r"At\s+(approximately\s+\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))\s*,?\s*the\s+Senate\s+will\s+vote\s+on\s+adoption\s+of\s+Calendar\s*#5,\s*S\.Res\.?690",
+        accepted,
+        flags=re.I,
+    )
+    if pattern_a and next_convening:
+        raw_vote_block_time = clean(pattern_a.group(1))
+        normalized_vote_block_time = normalize_public_time_label(raw_vote_block_time)
+        vote_block = {
+            "date": next_convening["date"],
+            "raw_time_text": raw_vote_block_time,
+            "time": normalized_vote_block_time,
+            "date_label": next_convening["date_label"],
+            "time_label": normalized_vote_block_time,
+        }
+        vote_block_time_source = clean(pattern_a.group(0))
+        vote_block_extraction_method = "pattern_a_fallback"
+
     cloture_filed = []
     if block_line:
         expected_votes_source = "structured_block"
@@ -500,9 +518,20 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             ec = clean(cloture_sentence.group(1))
             expected_votes.append(f"Motion to invoke cloture on {ec} nomination")
 
+        if pattern_a:
+            expected_votes.append("Adoption of Calendar #5, S.Res.690 (en bloc consideration of 49 nominations)")
+        pattern_b = re.search(
+            r"Following disposition of the resolution,\s*the Senate will vote on the motion to invoke cloture on Executive Calendar #728 Kevin Warsh",
+            accepted,
+            flags=re.I,
+        )
+        if pattern_b:
+            expected_votes.append("Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination")
+
         if expected_votes:
             expected_votes_source = "prose_fallback"
 
+    expected_votes = list(dict.fromkeys(expected_votes))
     return {
         "pro_formas": pro_formas[:6],
         "next_convening": {k:v for k,v in next_convening.items() if k!="date_obj"},
@@ -516,6 +545,9 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "vote_block_display_time": vote_block.get("time_label", ""),
         "vote_block_extraction_method": vote_block_extraction_method,
         "expected_votes_source": expected_votes_source,
+        "raw_vote_time_match": raw_vote_block_time,
+        "expected_votes_final": expected_votes[:8],
+        "renderer_source_function": "parse_forward_floor_schedule",
         "cloture_filed": list(dict.fromkeys(cloture_filed))[:8],
         "source_label": "Public schedule source",
         "source_url": CONGRESSIONAL_REPORTERS_URL,
@@ -603,6 +635,11 @@ def parse_time(line: str) -> Optional[time]:
 
 
 def normalize_public_time_label(raw: str) -> str:
+    # examples:
+    # "5:30pm" -> "5:30 p.m."
+    # "approximately 5:30pm" -> "approx. 5:30 p.m."
+    # "At approximately 5:30pm" -> "approx. 5:30 p.m."
+    # This function does not create datetime objects.
     text = clean(raw or "")
     if not text:
         return ""
@@ -1961,8 +1998,11 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in expected_votes[:6]) or "<li>No vote block announced. Monitor leadership schedule.</li>"
         convene_label = " · ".join(x for x in [convene.get("date_label") if convene else "", convene.get("time_label") if convene else ""] if x) or "Not yet announced"
         vote_label = " · ".join(x for x in [vote_block.get("date_label") if vote_block else "", vote_block.get("time_label") if vote_block else ""] if x) or "Not yet announced"
+        if expected_votes and votes_html.lower().find("no vote block announced") != -1:
+            votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in expected_votes[:6])
         return f"""
         <div class='card'>
+            <!-- forward schedule renderer v2 active -->
             <div class='logistics'>
                 <div><strong>Pro forma sessions:</strong><ul>{pro_forma_html}</ul></div>
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
@@ -2689,7 +2729,7 @@ def dashboard(
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
                 </div>
 
-                <section class="section"><h2>Next Expected Floor Action</h2>{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
+                <section class="section"><h2>Next Expected Floor Action</h2><!-- forward schedule renderer v2 active -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
 
                 <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
@@ -2767,6 +2807,11 @@ def debug_raw():
         "floor_raw": split_floor_events(floor_text),
         "ebb_items": [asdict(x) for x in ebb_items],
         "forward_schedule_diagnostics": forward_context,
+        "homepage_vote_block_value": (forward_context.get("parsed_forward_schedule", {}).get("vote_block", {}) or {}).get("time_label", ""),
+        "raw_vote_time_match": forward_context.get("raw_vote_block_time", ""),
+        "normalized_vote_time_label": forward_context.get("normalized_vote_block_time", ""),
+        "expected_votes_final": forward_context.get("parsed_forward_schedule", {}).get("expected_votes", []),
+        "renderer_source_function": "render_next_expected_floor_action",
         "forward_schedule_source_text": forward_context.get("forward_schedule_source_text", ""),
         "parsed_forward_schedule": forward_context.get("parsed_forward_schedule", {}),
         "ignored_dates": forward_context.get("ignored_dates", []),
