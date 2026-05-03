@@ -1895,7 +1895,9 @@ def filter_global_boilerplate(value: Optional[str]) -> Optional[str]:
 def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
     remarks = []
     grouped_remarks: Dict[str, List[JoltItem]] = {}
-    unnamed = 0
+    additional_items: List[JoltItem] = []
+    leadership_names = {"John Thune", "Chuck Schumer", "Dick Durbin", "Mitch McConnell"}
+
     for item in items:
         if item.category != "Remarks":
             continue
@@ -1903,7 +1905,7 @@ def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
             senator_name = item.senators_detected[0]
             grouped_remarks.setdefault(senator_name, []).append(item)
         else:
-            unnamed += 1
+            additional_items.append(item)
     for senator_name, senator_items in grouped_remarks.items():
         ordered = sorted(
             senator_items,
@@ -1924,12 +1926,23 @@ def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
         normalized.title = remark_line
         normalized.takeaway = ""
         remarks.append(normalized)
-    if unnamed:
+    if additional_items:
+        additional_count = len(additional_items)
+        title = f"Additional remarks ({additional_count})"
+
+        additional_names = [x.senators_detected[0] for x in additional_items if x.senators_detected]
+        unique_names = list(dict.fromkeys(additional_names))
+
+        if unique_names and len(unique_names) <= 3:
+            title = f"{title} — {', '.join(unique_names)}"
+        elif all((not x.senators_detected) or (x.senators_detected[0] not in leadership_names) for x in additional_items):
+            title = f"{title} — non-leadership"
+
         remarks.append(JoltItem(
             source="Derived",
-            raw=f"Additional remarks ({unnamed})",
+            raw=title,
             date_label=None, time_label=None, sort_datetime=None, category="Remarks",
-            title=f"Additional remarks ({unnamed})", urgency="low", status="inferred",
+            title=title, urgency="low", status="inferred",
             confidence="medium", quality="summary", location=None, building=None, measure=None,
             takeaway="", where_to_be="", movement_cue="",
             who_to_watch="", coverage_note="", staff_note="", gallery_note="", senators_detected=[],
