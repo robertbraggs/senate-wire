@@ -2749,6 +2749,37 @@ def procedural_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltI
     return recent, background
 
 
+def _build_upcoming_reference_text(items: List[JoltItem], now: datetime) -> str:
+    references: List[str] = []
+    for item in items:
+        references.extend([item.title or "", item.raw or "", item.measure or "", item.topic or ""])
+        if item.sort_datetime:
+            try:
+                dt = datetime.fromisoformat(item.sort_datetime)
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                if dt >= now - timedelta(hours=12):
+                    references.append(item.raw or "")
+            except ValueError:
+                continue
+    return clean(" ".join(references)).lower()
+
+
+def filter_background_procedure(items: List[JoltItem], upcoming_reference_text: str) -> List[JoltItem]:
+    filtered: List[JoltItem] = []
+    for item in items:
+        raw = clean(f"{item.title} {item.raw}").lower()
+        if item.title == "Cloture vote held":
+            continue
+        has_nomination_detail = any(k in raw for k in ["executive calendar", "nomination", "#"])
+        if has_nomination_detail and any(token in upcoming_reference_text for token in raw.split() if len(token) > 4):
+            normalized = JoltItem(**asdict(item))
+            normalized.date_label = None
+            normalized.time_label = None
+            filtered.append(normalized)
+    return filtered
+
+
 def to_signal_items(items: List[JoltItem]) -> List[SignalItem]:
     event_count = len([x for x in items if x.status != "historical"])
     density = 80 if event_count > 3 else 60 if event_count == 2 else 40 if event_count == 1 else 10
@@ -2807,6 +2838,8 @@ def dashboard(
         suppressed_earlier_terms = ["cloture filed", "cloture vote", "unanimous consent", "adjourn", "vote underway", "now voting"]
         now = datetime.now()
         recent_procedure, background_procedure = procedural_buckets(procedural_items, now)
+        upcoming_reference_text = _build_upcoming_reference_text(items, now)
+        background_procedure = filter_background_procedure(background_procedure, upcoming_reference_text)
         session_day = current_senate_session_day(all_items)
         earlier_items = [
             x for x in all_groups.get("Earlier Floor Activity", [])
@@ -3126,7 +3159,7 @@ def dashboard(
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
-                {section("Background Procedure", background_procedure, view, collapsed=True)}
+                {section("Background Procedure", background_procedure, view, collapsed=True) if background_procedure else ""}
                 {section("Earlier Activity", earlier_items, view, collapsed=True)}
                 {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
