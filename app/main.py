@@ -65,11 +65,7 @@ SENATOR_MAP = {x["full"]: x for x in SENATORS}
 for _s in SENATORS:
     _s["party_state"] = f"{_s['party']}-{_s['state']}"
 
-MANUAL_GALLERY_NOTES = [
-    # Add manually curated notes here when needed.
-    # Example:
-    # "Cameras should stage near the Ohio Clock ahead of the first vote window.",
-]
+MANUAL_GALLERY_NOTES = []
 SEARCHABLE_LINK_LABELS = " ".join(name for name, _ in QUICK_LINKS).lower()
 
 
@@ -622,12 +618,13 @@ def extract_topic(text: str) -> Optional[str]:
     patterns = [
         r"spoke on ([^.;]+)",
         r"spoke about ([^.;]+)",
+        r"spoke regarding ([^.;]+)",
         r"spoke in support of ([^.;]+)",
         r"spoke in opposition to ([^.;]+)",
         r"asked unanimous consent to proceed to ([^.;]+)",
         r"objected to ([^.;]+)",
-        r"regarding ([^.;]+)",
-        r"\bon ([A-Z][^.;]+)",
+        r"hearing to examine ([^.;]+)",
+        r"to hold hearings to examine ([^.;]+)",
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.I)
@@ -636,6 +633,29 @@ def extract_topic(text: str) -> Optional[str]:
     return None
 
 
+
+
+def parse_measure_for_congress_api(measure: str, default_congress: int = 119) -> Optional[Dict[str, str]]:
+    if not measure:
+        return None
+    m = re.search(r"\b(S\.|S\.Res\.|S\.J\.Res\.|H\.R\.|H\.J\.Res\.)\s*(\d+)\b", measure, re.I)
+    if not m:
+        return None
+    kind = m.group(1).lower().replace(" ", "")
+    mapping = {"s.": "s", "s.res.": "sres", "s.j.res.": "sjres", "h.r.": "hr", "h.j.res.": "hjres"}
+    bill_type = mapping.get(kind)
+    if not bill_type:
+        return None
+    return {"congress": str(default_congress), "billType": bill_type, "billNumber": m.group(2)}
+
+
+def coverage_value_for_item(item: JoltItem) -> str:
+    text = f"{item.title} {item.raw}".lower()
+    if any(k in text for k in ["vote underway", "roll call", "cloture", "stakeout", "press conference", "media availability"]) or any(s in LEADERSHIP_NAMES for s in item.senators_detected):
+        return "High"
+    if any(k in text for k in ["unanimous consent", "objected", "hearing", "markup", "nomination"]) or item.senators_detected:
+        return "Medium"
+    return "Low"
 def classify_coverage_target(item: JoltItem) -> Optional[str]:
     return infer_coverage_target(item.raw, item.senators_detected, item.committee, item.measure)
 
@@ -1295,6 +1315,15 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
 
 
 
+
+
+def top_actions(items: List[JoltItem]) -> List[str]:
+    ranked = sorted([x for x in items if x.status != "historical"], key=score_item, reverse=True)[:3]
+    actions = []
+    for it in ranked:
+        place = it.location if it.location and it.location != "Location not parsed" else it.where_to_be
+        actions.append(f"{it.movement_cue.split('.')[0]}. {('Watch ' + it.who_to_watch) if it.who_to_watch else ''} {('Move to ' + place) if place else ''}".strip())
+    return [clean(a) for a in actions if a]
 def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
     now = datetime.now()
 
@@ -1420,13 +1449,13 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         <div class="logistics">
             <div><strong>Where:</strong> {html.escape(place)}</div>
             {building}
-            <div><strong>Movement:</strong> {html.escape(item.movement_cue)}</div>
-            <div><strong>Watch:</strong> {html.escape(item.who_to_watch)}</div>
+            <div><strong>Movement cue:</strong> {html.escape(item.movement_cue)}</div>
+            <div><strong>Who to watch:</strong> {html.escape(item.who_to_watch)}</div>
             {speaker_line}
             {senators_line}
             {f"<div><strong>Topic:</strong> {html.escape(item.topic)}</div>" if item.topic else ""}
             {coverage_line}
-            <div><strong>Note:</strong> {html.escape(note)}</div>
+            <div><strong>Press availability:</strong> {html.escape(item.press_availability)}</div><div><strong>Best window:</strong> {html.escape(item.best_window)}</div><div><strong>Coverage value:</strong> {coverage_value_for_item(item)}</div><div><strong>Source confirmation:</strong> {html.escape(item.source)}</div><div><strong>Note:</strong> {html.escape(note)}</div>
             <div><strong>Quality:</strong> {html.escape(item.quality)}</div>
         </div>
         {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>Measure Link</a>" if item.measure else ""}
@@ -1797,12 +1826,7 @@ def dashboard(
                 </div>
 
                 <div class="ticker">
-                    <strong>Where to be now:</strong> {html.escape(top_banner["where_to_be_now"])}
-                    <br>
-                    <strong>Movement:</strong> {html.escape(top_banner["movement"])}
-                    <br>
-                    <strong>Watch:</strong> {html.escape(top_banner["watch"])}
-                </div>
+                    <strong>WHERE TO BE NOW:</strong> {html.escape(top_banner["where_to_be_now"])}<br><strong>Movement instruction:</strong> {html.escape(top_banner["movement"])}<br><strong>Press availability level:</strong> {html.escape((now_item.press_availability if now_item else "Low"))}<br><strong>Who to watch:</strong> {html.escape(top_banner["watch"])}<br><strong>NEXT MOVE:</strong> {html.escape(next_items[0].movement_cue if next_items else "Monitor — no immediate movement cue.")}<br><strong>WATCH:</strong> {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, committees, and issue actors")}</div>
 
                 <div class="status">
                     {status_bar}
@@ -1820,7 +1844,7 @@ def dashboard(
                     <div class="stat"><b>{len([x for x in items if x.urgency == "move now"])}</b>Move now</div>
                 </div>
 
-                <div class="topgrid">
+                <section class="section"><h2>Top 3 Actions Right Now</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(items)) if top_actions(items) else "<p class='empty'>Monitor. No active vote, event, or hearing movement detected.</p>"}</section><div class="topgrid">
                     <div class="panel">
                         <h2>Now / Best Coverage Cue</h2>
                         {item_card(now_item, view) if now_item else '<p class="empty">No active cue detected. Check EBB, committee schedule, or Congressional Reporters feed.</p>'}
@@ -1831,19 +1855,21 @@ def dashboard(
                     </div>
                 </div>
 
-                section("Staff / Gallery Notes", [], view, collapsed=False)
+                {gallery_notes_section()}
                 {section("Where to Be Now", [now_item] if now_item else [], view)}
+                {section("Today’s Coverage Outlook", [now_item] if now_item else [], view, collapsed=True)}
+                
                 {section("Key Votes and Schedule", groups.get("Votes", []), view)}
                 {section("Stakeouts", [x for x in groups.get("Events", []) if "stakeout" in x.title.lower()], view)}
                 {section("News Events", groups.get("Events", []), view)}
                 {section("Committee Meetings & Hearings", [x for x in groups.get("Events", []) if x.committee], view)}
-                {section("Senate Floor Schedule", groups.get("Schedule", []), view)}
+                
                 {section("Key Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
                 {section("Legislative Notes", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Floor Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
 
                 <div class="links">
-                    <h2>Quick Links</h2>
+                    <h2>Helpful Links</h2>
                     {quick_links}
                     <details class="admin"><summary>Admin / Diagnostics</summary><p><a href="/events">Events JSON</a> · <a href="/summary">Summary JSON</a> · <a href="/debug/raw">Debug Raw</a> · <a href="/health">Health</a></p></details>
                 </div>
