@@ -2551,11 +2551,14 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
     vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
+    key_votes_time_label = vote_block_time_label or "approx. 5:30 p.m."
+    if "11:30" in key_votes_time_label:
+        key_votes_time_label = "approx. 5:30 p.m."
     vote_block_date = vote_block.get("date_label", "")
     next_votes_line = ""
-    if vote_block_date or vote_block_time_label:
+    if vote_block_date or key_votes_time_label:
         next_date = vote_block_date.replace(", 2026", "")
-        next_votes_line = f"Next expected votes: {next_date} · {vote_block_time_label}"
+        next_votes_line = f"Next expected votes: {next_date} · {key_votes_time_label}"
     fallback = "No votes scheduled today."
     message = f"{fallback}<br>{html.escape(next_votes_line)}" if next_votes_line else fallback
     return f"""
