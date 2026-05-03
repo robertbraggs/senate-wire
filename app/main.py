@@ -2487,6 +2487,7 @@ def empty_message(title: str) -> str:
         "Committee Meetings & Hearings": "No committee hearings or meetings currently scheduled.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural context updates are active at this time.",
+        "Earlier Activity": "No recent floor activity.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No upcoming legislation or nomination signals found in public sources.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
@@ -2565,6 +2566,34 @@ def movement_ticker(items: List[JoltItem]) -> Dict[str, str]:
 
 
 
+
+def is_recent_earlier_activity(item: JoltItem, now: datetime, session_day: Optional[date]) -> bool:
+    if not item.sort_datetime:
+        return False
+    try:
+        dt = datetime.fromisoformat(item.sort_datetime)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+    except ValueError:
+        return False
+    return dt >= now - timedelta(hours=72) or (session_day is not None and dt.date() == session_day)
+
+
+def current_senate_session_day(items: List[JoltItem]) -> Optional[date]:
+    floor_categories = {"Votes", "Floor Action", "Schedule", "Earlier Floor Activity"}
+    floor_dates: List[date] = []
+    for item in items:
+        if item.category not in floor_categories or not item.sort_datetime:
+            continue
+        try:
+            dt = datetime.fromisoformat(item.sort_datetime)
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            floor_dates.append(dt.date())
+        except ValueError:
+            continue
+    return max(floor_dates) if floor_dates else None
+
 def _window_label(certainty: str) -> str:
     return {"scheduled": "Scheduled", "expected": "Expected", "developing": "Developing", "none": "No active window"}.get(certainty, "No active window")
 
@@ -2635,10 +2664,13 @@ def dashboard(
         procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
         procedural_keys = {x.title.lower() for x in procedural_items}
         suppressed_earlier_terms = ["cloture filed", "cloture vote", "unanimous consent", "adjourn", "vote underway", "now voting"]
+        now = datetime.now()
+        session_day = current_senate_session_day(all_items)
         earlier_items = [
             x for x in all_groups.get("Earlier Floor Activity", [])
             if not any(t in f"{x.title} {x.raw}".lower() for t in suppressed_earlier_terms)
             and x.title.lower() not in procedural_keys
+            and is_recent_earlier_activity(x, now, session_day)
         ]
 
         now_item = important_now(items)
@@ -2661,7 +2693,7 @@ def dashboard(
             ticker_why = "No active floor or media-event trigger."
             ticker_guidance = "Monitor floor updates, EBB postings, and committee schedules."
 
-        today = datetime.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
+        today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
         quick_links = "".join(
             f"<a href='{html.escape(url)}' target='_blank'>{html.escape(name)}</a>"
