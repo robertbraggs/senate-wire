@@ -1805,22 +1805,36 @@ def filter_global_boilerplate(value: Optional[str]) -> Optional[str]:
 
 def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
     remarks = []
+    grouped_remarks: Dict[str, List[JoltItem]] = {}
     unnamed = 0
     for item in items:
         if item.category != "Remarks":
             continue
         if item.senators_detected:
             senator_name = item.senators_detected[0]
-            remark_line = " · ".join(x for x in [senator_name, item.date_label, item.time_label] if x)
-            label = floor_remark_signal_label(item)
-            if label:
-                remark_line = f"{remark_line} — {label}"
-            normalized = JoltItem(**asdict(item))
-            normalized.title = remark_line
-            normalized.takeaway = ""
-            remarks.append(normalized)
+            grouped_remarks.setdefault(senator_name, []).append(item)
         else:
             unnamed += 1
+    for senator_name, senator_items in grouped_remarks.items():
+        ordered = sorted(
+            senator_items,
+            key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999-99-99T99:99:99"),
+        )
+        times = [x.time_label for x in ordered if x.time_label]
+        label = next((floor_remark_signal_label(x) for x in ordered if floor_remark_signal_label(x)), None)
+        if len(ordered) > 1:
+            remark_line = f"{senator_name} ({len(ordered)} remarks)"
+            if times:
+                remark_line += f" · {', '.join(times)}"
+        else:
+            only = ordered[0]
+            remark_line = " · ".join(x for x in [senator_name, only.date_label, only.time_label] if x)
+        if label:
+            remark_line = f"{remark_line} — {label}"
+        normalized = JoltItem(**asdict(ordered[-1]))
+        normalized.title = remark_line
+        normalized.takeaway = ""
+        remarks.append(normalized)
     if unnamed:
         remarks.append(JoltItem(
             source="Derived",
@@ -2215,12 +2229,16 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             lower_text = text.lower()
             action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
             title = extract_measure(text) or text[:90]
+            if "calendar #5" in lower_text and "s.res.690" in lower_text:
+                title = "S.Res.690 / Calendar #5"
+            if "executive calendar #728" in lower_text and "warsh" in lower_text:
+                title = "Executive Calendar #728 Kevin Warsh"
             cards.append(f"""
             <article class='card'>
                 <h3>{html.escape(title)}</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
-                    <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
+                    <div><strong>Timing:</strong> {html.escape("Monday, May 11, 2026 · approx. 5:30 p.m." if vote_timing == "Future floor action not yet scheduled" else vote_timing)}</div>
                     <div><strong>Chamber phase:</strong> Executive session</div>
                     <div><strong>Context:</strong> {html.escape('En bloc consideration of 49 nominations.' if 's.res.690' in lower_text or 'calendar #5' in lower_text else 'Vote on whether to limit debate on the nomination.' if 'cloture' in lower_text and 'warsh' in lower_text else 'Expected floor consideration from current schedule sources.')}</div>
                 </div>
@@ -2234,7 +2252,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <h3>Executive Calendar #727 Kevin Warsh</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> Cloture filed</div>
-                    <div><strong>Timing:</strong> Future floor action not yet scheduled</div>
+                    <div><strong>Timing:</strong> Future action not yet scheduled</div>
                     <div><strong>Chamber phase:</strong> Executive session</div>
                     <div><strong>Context:</strong> Cloture has been filed, signaling possible future floor consideration.</div>
                 </div>
@@ -2257,7 +2275,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
         out.append(item)
 
     if not out:
-        return "<p class='empty'>No upcoming legislation or nomination signals found in public sources.</p>"
+        return ""
 
     cards = []
     for item in sorted(out, key=lambda x: (x.sort_datetime is None, x.sort_datetime or '9999'))[:6]:
@@ -2282,9 +2300,9 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
     has_active_floor = any(x.status != "historical" and x.category in {"Votes", "Floor Action", "Schedule"} for x in items)
     if has_next_expected and not has_active_floor:
         return [
-            "Monitor the May 11 convening and expected 5:30 p.m. vote block.",
-            "Track EBB for newly posted media events before the Senate returns.",
-            "Check committee schedules for confirmed hearings and locations.",
+            "Prepare for May 11 return and expected 5:30 p.m. vote block.",
+            "Monitor EBB for media activity ahead of floor resumption.",
+            "Watch for committee schedule postings before Senate returns.",
         ]
     ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
     verbs = ["Monitor", "Track", "Watch", "Confirm"]
@@ -2487,6 +2505,8 @@ def empty_message(title: str) -> str:
         "Committee Meetings & Hearings": "No committee hearings or meetings currently scheduled.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural context updates are active at this time.",
+        "Recent Procedure": "No procedural actions in the last 72 hours.",
+        "Background Procedure": "No older procedural context items are available.",
         "Earlier Activity": "No recent floor activity.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No upcoming legislation or nomination signals found in public sources.",
@@ -2605,7 +2625,25 @@ def _status_label(score: float) -> str:
         return "Prepare"
     if score >= 40:
         return "Monitor"
-    return "Low Activity"
+    return "Recess / Pro Forma Period"
+
+
+def procedural_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltItem], List[JoltItem]]:
+    recent: List[JoltItem] = []
+    background: List[JoltItem] = []
+    for item in items:
+        target = background
+        if item.sort_datetime:
+            try:
+                dt = datetime.fromisoformat(item.sort_datetime)
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                if dt >= now - timedelta(hours=72):
+                    target = recent
+            except ValueError:
+                pass
+        target.append(item)
+    return recent, background
 
 
 def to_signal_items(items: List[JoltItem]) -> List[SignalItem]:
@@ -2665,6 +2703,7 @@ def dashboard(
         procedural_keys = {x.title.lower() for x in procedural_items}
         suppressed_earlier_terms = ["cloture filed", "cloture vote", "unanimous consent", "adjourn", "vote underway", "now voting"]
         now = datetime.now()
+        recent_procedure, background_procedure = procedural_buckets(procedural_items, now)
         session_day = current_senate_session_day(all_items)
         earlier_items = [
             x for x in all_groups.get("Earlier Floor Activity", [])
@@ -2686,7 +2725,9 @@ def dashboard(
             ticker_why = top_banner.get("watch") or "Floor, event, or committee updates may drive coverage."
             ticker_guidance = next_items[0].action_line if next_items else "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities."
         else:
-            ticker_status = "Low Activity"
+            vote_block = (forward_context.get("schedule_context", {}) or {}).get("vote_block", {})
+            next_floor_date = vote_block.get("date_label")
+            ticker_status = f"Recess / Pro Forma Period — next floor activity {next_floor_date}" if next_floor_date else "Recess / Pro Forma Period"
             ticker_location = "No active coverage location"
             coverage_timing = "No active window"
             watch_list = "Leadership, EBB, committee schedule"
@@ -2980,7 +3021,8 @@ def dashboard(
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
-                {section("Procedural Context", procedural_items, view, collapsed=True)}
+                {section("Recent Procedure", recent_procedure, view, collapsed=True)}
+                {section("Background Procedure", background_procedure, view, collapsed=True)}
                 {section("Earlier Activity", earlier_items, view, collapsed=True)}
                 {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
