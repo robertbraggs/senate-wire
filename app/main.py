@@ -1435,7 +1435,10 @@ def enrich_public_fields(item: JoltItem) -> None:
         item.coverage_window = "earlier"
     if not item.time_label:
         item.coverage_window = "none" if item.status == "historical" else item.coverage_window
-    item.coverage_type = "vote" if item.category == "Votes" else "hearing" if "hearing" in raw else "stakeout" if "stakeout" in raw else "press conference" if "press conference" in raw else "floor update"
+    if item.category == "Committee Meetings & Hearings":
+        item.coverage_type = "Committee hearing" if "hearing" in raw else "Committee meeting"
+    else:
+        item.coverage_type = "vote" if item.category == "Votes" else "hearing" if "hearing" in raw else "stakeout" if "stakeout" in raw else "press conference" if "press conference" in raw else "floor update"
     if any(x in raw for x in ["roll call", "recorded vote", "cloture vote", "press conference", "media availability", "stakeout"]):
         item.visibility_level = "High"
     elif any(x in raw for x in ["hearing", "markup", "nomination", "remarks"]) or item.senators_detected:
@@ -1448,7 +1451,10 @@ def enrich_public_fields(item: JoltItem) -> None:
         item.public_value = "The Senate acted without a recorded vote; this may be lower visibility unless the matter is high-profile."
     else:
         item.public_value = item.takeaway
-    item.legislative_context = "The Senate is considering bills, resolutions, or related legislative business."
+    if item.category == "Committee Meetings & Hearings":
+        item.legislative_context = "A Senate committee is holding a scheduled meeting or hearing."
+    else:
+        item.legislative_context = "The Senate is considering current floor business and related procedural actions."
     if "motion to invoke cloture" in raw:
         item.procedure_stage, item.outcome_stage, item.vote_status = "cloture vote", "procedural", "scheduled"
         item.legislative_context = "The Senate is voting on whether to limit debate."
@@ -1488,7 +1494,7 @@ def enrich_public_fields(item: JoltItem) -> None:
         "latest_action": item.congress_latest_action,
         "policy_area": item.congress_policy_area,
     }
-    item.links = [{"label": "Source", "url": item.url or ""}] + ([{"label": "Congress.gov", "url": item.congress_url}] if item.congress_url else [])
+    item.links = [{"label": "Open source", "url": item.url or ""}] + ([{"label": "Congress.gov", "url": item.congress_url}] if item.congress_url else [])
 
 
 def important_now(items: List[JoltItem]) -> Optional[JoltItem]:
@@ -1646,90 +1652,52 @@ def badge_class(urgency: str) -> str:
 
 def item_card(item: JoltItem, view: str = "reporter") -> str:
     when = " ".join(x for x in [item.time_label, item.date_label] if x) or "Time TBD"
-    place = item.coverage_location or "No active coverage location"
-    building = f"<div><strong>Building:</strong> {html.escape(item.building)}</div>" if item.building else ""
-    measure = f"<span class='pill'>{html.escape(item.measure)}</span>" if item.measure else ""
-    senators_line = ""
-    speaker_line = ""
-    if item.senators_detected:
-        labels = [f"{name} ({SENATOR_MAP[name]['party_state']})" for name in item.senators_detected if name in SENATOR_MAP]
-        heading = "Senator" if len(labels) == 1 else "Senators"
-        senators_line = f"<div><strong>{heading}:</strong> {html.escape(', '.join(labels))}</div>" if labels else ""
-        speaker_line = f"<div><strong>Speaker:</strong> {html.escape(labels[0])}</div>" if labels else ""
-    coverage_line = f"<div><strong>Coverage type:</strong> {html.escape(item.coverage_type)}</div>" if item.coverage_target else ""
-    press_line = f"<div><strong>Press availability:</strong> {html.escape(item.press_availability)}</div>" if item.press_availability in {"Medium", "High"} else ""
-    cov_value = coverage_value_for_item(item)
-    cov_line = f"<div><strong>Coverage value:</strong> {html.escape(cov_value)}</div>" if cov_value in {"Medium", "High"} else ""
 
-    note = item.coverage_note
-    if view == "staff":
-        note = item.staff_note
-    elif view == "gallery":
-        note = item.gallery_note
+    if item.category == "Committee Meetings & Hearings":
+        title = "Committee Meeting"
+        when = item.time_label or "Time TBD"
+        description = "Official Senate committee meeting listing."
+        coverage_location = item.coverage_location or "Room TBD"
+        coverage_window = item.coverage_window if item.coverage_window and item.coverage_window != "none" else "Rolling"
+        coverage_guidance = "Coverage typically centers near the committee room before and after the hearing."
+        who_to_watch = "Committee members, witnesses, and participating Senators."
+        coverage_type = "Committee hearing" if "hearing" in f"{item.title} {item.raw}".lower() else "Committee meeting"
+        legislative_context = "A Senate committee is holding a scheduled meeting or hearing."
+        why_it_matters = "Official committee activity that may generate news or member availability."
+    else:
+        title = item.title
+        description = item.takeaway
+        coverage_location = item.coverage_location or "No active coverage location"
+        coverage_window = item.coverage_window or "Rolling"
+        coverage_guidance = item.coverage_action or item.action_line or item.movement_cue
+        who_to_watch = item.who_to_watch
+        coverage_type = item.coverage_type
+        legislative_context = item.legislative_context
+        why_it_matters = item.public_value
 
-    official_context = ""
-    if any([item.congress_bill_title, item.congress_latest_action, item.congress_summary, item.congress_sponsors, item.congress_url]):
-        official_context = f"""
-        <div class="logistics">
-            <div><strong>Official context</strong></div>
-            {f"<div><strong>Official title:</strong> {html.escape(item.congress_bill_title)}</div>" if item.congress_bill_title else ""}
-            {f"<div><strong>Latest official action:</strong> {html.escape(item.congress_latest_action)}</div>" if item.congress_latest_action else ""}
-            {f"<div><strong>Congress.gov summary:</strong> {html.escape(item.congress_summary)}</div>" if item.congress_summary else ""}
-            {f"<div><strong>Sponsor:</strong> {html.escape(item.congress_sponsors)}</div>" if item.congress_sponsors else ""}
-            {f"<div><strong>Policy area:</strong> {html.escape(item.congress_policy_area)}</div>" if item.congress_policy_area else ""}
-            {f"<div><a class='source' href='{html.escape(item.congress_url)}' target='_blank'>Official Congress.gov link</a></div>" if item.congress_url else ""}
-        </div>
-        """
-
-    generic_access_notes = {
-        "High-interest coverage may occur around public-facing Senate coverage locations.",
-        "Coverage should be coordinated through the appropriate Gallery or committee contact.",
-        "Use authorized public-facing stakeout areas.",
-        "Monitor public floor updates and official sources.",
-    }
-    generic_rules_notes = {
-        "Timing can change based on floor proceedings and official direction.",
-        "Committee direction and room capacity may affect coverage.",
-        "Avoid obstructing pedestrian flow and follow Gallery positioning guidance.",
-        "Coverage remains subject to Senate rules and Gallery guidance.",
-    }
-    access_note_line = f"<div><strong>Access note:</strong> {html.escape(item.access_note)}</div>" if item.access_note and item.access_note not in generic_access_notes else ""
-    rules_note_line = f"<div><strong>Rules note:</strong> {html.escape(item.rules_note)}</div>" if item.rules_note and item.rules_note not in generic_rules_notes else ""
-    pool_note_line = f"<div><strong>Pool note:</strong> {html.escape(item.pool_note)}</div>" if item.pool_note and item.pool_note != "No pool note." else ""
+    links = []
+    if item.committee:
+        links.append(f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>")
+    if item.source == 'EBB':
+        links.append(f"<a class='source' href='{EBB_URL}' target='_blank'>Open source</a>")
+    elif item.url:
+        links.append(f"<a class='source' href='{html.escape(item.url)}' target='_blank'>{'Open Congressional Reporters' if item.source == 'Congressional Reporters' else 'Open source'}</a>")
 
     return f"""
     <article class="card">
-        <div class="row">
-            <span class="badge {badge_class(item.urgency)}">{html.escape(item.action_confidence)}</span>
-            <span class="meta">{html.escape(item.source)} · {html.escape(item.status)} · {html.escape(item.confidence)}</span>
-        </div>
-        <h3>{html.escape(item.title)}</h3>
+        <h3>{html.escape(title)}</h3>
         <div class="when">{html.escape(when)}</div>
-        {measure}
-        <p>{html.escape(item.takeaway)}</p>
+        <p>{html.escape(description)}</p>
         <div class="logistics">
-            <div><strong>Coverage location:</strong> {html.escape(place)}</div>
-            <div><strong>Coverage window:</strong> {html.escape(item.coverage_window)}</div>
-            {building}
-            <div><strong>Coverage guidance:</strong> {html.escape(item.coverage_action or item.action_line or item.movement_cue)}</div>
-            <div><strong>Who to watch:</strong> {html.escape(item.who_to_watch)}</div>
-            {speaker_line}
-            {senators_line}
-            {f"<div><strong>Topic:</strong> {html.escape(item.topic)}</div>" if item.topic else ""}
-            {f"<div><strong>Measure:</strong> {html.escape(item.measure)}</div>" if item.measure else ""}
-            {coverage_line}
-            {press_line}{cov_line}
-            {f"<div><strong>Legislative context:</strong> {html.escape(item.legislative_context)}</div>" if item.legislative_context else ""}
-            {f"<div><strong>Why it matters:</strong> {html.escape(item.public_value)}</div>" if item.public_value else ""}
-            {access_note_line}
-            {rules_note_line}
-            {pool_note_line}
+            <div><strong>Coverage location:</strong> {html.escape(coverage_location)}</div>
+            <div><strong>Coverage window:</strong> {html.escape(coverage_window)}</div>
+            <div><strong>Coverage guidance:</strong> {html.escape(coverage_guidance)}</div>
+            <div><strong>Who to watch:</strong> {html.escape(who_to_watch)}</div>
+            <div><strong>Coverage type:</strong> {html.escape(coverage_type)}</div>
+            {f"<div><strong>Legislative context:</strong> {html.escape(legislative_context)}</div>" if legislative_context else ""}
+            {f"<div><strong>Why it matters:</strong> {html.escape(why_it_matters)}</div>" if why_it_matters else ""}
         </div>
-        {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>View on Congress.gov</a>" if item.measure else ""}
-        {official_context}
-        {f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>" if item.committee else ""}
-        {f"<a class='source' href='{EBB_URL}' target='_blank'>Open EBB</a>" if item.source == 'EBB' else ""}
-        <a class="source" href="{html.escape(item.url or '#')}" target="_blank">{"Open Congressional Reporters" if item.source == "Congressional Reporters" else "Open source"}</a>
+        {''.join(links)}
     </article>
     """
 
