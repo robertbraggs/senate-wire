@@ -1809,6 +1809,7 @@ def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
 
 def build_procedural_context(items: List[JoltItem]) -> List[JoltItem]:
     out = []
+    seen = set()
     for item in items:
         raw = f"{item.title} {item.raw}".lower()
         title = None
@@ -1822,9 +1823,10 @@ def build_procedural_context(items: List[JoltItem]) -> List[JoltItem]:
             title = "Senate adjourned"
         elif "vote underway" in raw or "now voting" in raw:
             title = "Vote underway"
-        if title:
+        if title and title not in seen:
             item.title = title
             out.append(item)
+            seen.add(title)
     return out
 
 
@@ -2141,8 +2143,9 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
-    timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block.get("time_label")] if x) or "Future floor action not yet scheduled"
+    vote_timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block.get("time_label")] if x) or "Future floor action not yet scheduled"
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
+
     if parsed:
         cards = []
         for text in parsed[:6]:
@@ -2150,20 +2153,20 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             if any(x in lower_text for x in ["wrap up for", "confirmed:", "agreed to:", "passed:"]):
                 continue
             action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
-            when = timing if action in {"Cloture vote", "Adoption vote"} else timing
             title = extract_measure(text) or text[:90]
             cards.append(f"""
             <article class='card'>
                 <h3>{html.escape(title)}</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
-                    <div><strong>Timing:</strong> {html.escape(when)}</div>
+                    <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
                 </div>
                 <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
             """)
+
         cloture_filed = schedule_context.get("cloture_filed", [])
-        if any("executive calendar #727" in clean(x).lower() and "kevin warsh" in clean(x).lower() for x in cloture_filed):
+        if any("executive calendar #727" in clean(x).lower() for x in cloture_filed):
             cards.append(f"""
             <article class='card'>
                 <h3>Executive Calendar #727 Kevin Warsh</h3>
@@ -2174,7 +2177,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
             """)
-        return "".join(cards)
+        return "".join(cards) if cards else "<p class='empty'>No upcoming legislation or nomination signals found in public sources.</p>"
+
     include_tokens = ["cloture", "motion to proceed", "confirmation", "nomination", "passage", "roll call", "executive", "s.", "h.r.", "resolution"]
     out = []
     featured_key = (featured.title, featured.sort_datetime, featured.measure) if featured else None
@@ -2200,16 +2204,14 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             <h3>{html.escape(measure)}</h3>
             <div class='logistics'>
                 <div><strong>Expected action:</strong> {html.escape(item.title)}</div>
-                <div><strong>Timing window:</strong> {html.escape(_fmt_item_datetime(item))}</div>
+                <div><strong>Timing:</strong> {html.escape(_fmt_item_datetime(item))}</div>
                 <div><strong>Procedural stage:</strong> {html.escape(item.procedure_stage or item.category)}</div>
-                <div><strong>Legislative context:</strong> {html.escape(item.legislative_context or item.takeaway)}</div>
-                <div><strong>Public value:</strong> {html.escape(item.public_value or item.takeaway)}</div>
-                {f"<div><strong>Official context:</strong> {html.escape(item.congress_official_context)}</div>" if item.congress_official_context else ""}
             </div>
             <a class='source' href='{html.escape(item.url or CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
         </article>
         """)
     return "".join(cards)
+
 
 def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None) -> List[str]:
     schedule_context = (context or {}).get("schedule_context", {})
@@ -2404,13 +2406,17 @@ def empty_message(title: str) -> str:
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
     if collapsed:
-        cards = "".join(item_card(item, view) for item in items[:20])
+        limit = 7 if title == "Earlier Activity" else 20
+        visible = items[:limit]
+        cards = "".join(item_card(item, view) for item in visible)
+        hidden_count = max(0, len(items) - limit)
+        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Earlier Activity" else ""
 
         return f"""
         <section class="section">
             <details>
                 <summary><h2>{html.escape(title)} ({len(items)})</h2></summary>
-                {cards if cards else empty_message(title)}
+                {cards if cards else empty_message(title)}{hidden_note}
             </details>
         </section>
         """
@@ -2536,7 +2542,7 @@ def dashboard(
         all_groups = grouped(all_items)
         floor_remarks_items = build_floor_remarks(all_groups.get("Remarks", []))
         procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
-        earlier_items = all_groups.get("Earlier Floor Activity", [])[:7]
+        earlier_items = all_groups.get("Earlier Floor Activity", [])
 
         now_item = important_now(items)
         next_items = next_90(items)
