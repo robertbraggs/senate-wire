@@ -1433,10 +1433,39 @@ def split_ebb_events(text: str) -> List[str]:
     return unique[:40]
 
 
+def parse_ebb_structured_fields(raw: str) -> Dict[str, str]:
+    fields = {"date": "", "time": "", "location": "", "title": "", "description": ""}
+    if not raw:
+        return fields
+    for key in fields.keys():
+        m = re.search(rf"\b{key}\s*:\s*(.+?)(?=(?:\b(?:date|time|location|title|description)\s*:)|$)", raw, flags=re.I)
+        if m:
+            fields[key] = clean(m.group(1))
+    return fields
+
+
+def infer_ebb_chamber(structured: Dict[str, str], raw: str) -> str:
+    title = (structured.get("title") or "").lower()
+    location = (structured.get("location") or "").lower()
+    description = (structured.get("description") or "").lower()
+    raw_lower = (raw or "").lower()
+    if "house floor" in title or "house floor" in location or "the house meets" in description or "the house meets" in raw_lower:
+        return "House"
+    return "Senate"
+
+
+def is_joint_or_senate_relevant_ebb(structured: Dict[str, str], raw: str) -> bool:
+    lower = " ".join([raw or "", structured.get("title") or "", structured.get("description") or ""]).lower()
+    senate_joint_terms = ["joint", "bicameral", "conference committee", "state of the union", "senate"]
+    return any(term in lower for term in senate_joint_terms)
+
+
 def classify_ebb(raw: str) -> Dict[str, str]:
     raw = normalize_ebb_location_text(raw)
-    title = infer_ebb_title(raw)
-    location = extract_ebb_room(raw) or infer_location(raw)
+    structured = parse_ebb_structured_fields(raw)
+    chamber = infer_ebb_chamber(structured, raw)
+    title = structured.get("title") or infer_ebb_title(raw)
+    location = structured.get("location") or extract_ebb_room(raw) or infer_location(raw)
     building = infer_building(location)
     committee = infer_ebb_committee(raw)
     lower = raw.lower()
@@ -1480,24 +1509,37 @@ def classify_ebb(raw: str) -> Dict[str, str]:
 
     watch = committee or "Event host, committee members, witnesses, leadership, or announced Senators."
 
+    if chamber == "House":
+        category = "House / Joint Coverage Notes"
+        event_type = title
+        takeaway = clean(structured.get("description") or "House schedule note from EBB.")
+        coverage_note = "House item from EBB; keep in House/Joint notes unless Senate coverage relevance is clear."
+        where = location or "House Floor"
+    else:
+        category = "Events"
+        event_type = title
+        takeaway = "Media logistics or event item from EBB."
+        coverage_note = "Use event time and location to stage cameras, crews, or reporters before arrivals/exits."
+
     return {
         "title": title,
-        "category": "Events",
+        "category": category,
         "urgency": urgency,
         "status": "confirmed",
         "confidence": confidence,
         "quality": quality if (parse_time(raw) and location) else quality,
         "location": location or "Location not parsed",
         "building": building,
-        "takeaway": "Media logistics or event item from EBB.",
+        "takeaway": takeaway,
         "where_to_be": where,
         "movement_cue": movement,
         "who_to_watch": watch,
-        "coverage_note": "Use event time and location to stage cameras, crews, or reporters before arrivals/exits.",
+        "coverage_note": coverage_note,
         "staff_note": "Useful for anticipating press presence, member movement, and committee/event traffic.",
         "gallery_note": "Confirm room, camera setup, credential access, pool needs, and whether gallery support is needed.",
-        "event_type": title,
+        "event_type": event_type,
         "committee": committee,
+        "chamber": chamber,
     }
 
 
@@ -1553,9 +1595,13 @@ def fetch_ebb_items() -> List[JoltItem]:
     today = datetime.now().date()
 
     for raw in raw_events:
-        d = parse_date(raw) or today
-        t = parse_time(raw)
+        structured = parse_ebb_structured_fields(raw)
+        d = parse_date(structured.get("date") or "") or parse_date(raw) or today
+        t = parse_time(structured.get("time") or "") or parse_time(raw)
         c = classify_ebb(raw)
+        chamber = c.get("chamber", "Senate")
+        if chamber == "House" and not is_joint_or_senate_relevant_ebb(structured, raw):
+            continue
         senators = detect_senators(raw)
         committee = infer_ebb_committee(raw)
         coverage_target = infer_coverage_target(raw, senators, committee, None)
@@ -1574,6 +1620,7 @@ def fetch_ebb_items() -> List[JoltItem]:
             confidence=c["confidence"],
             quality=c["quality"],
             location=c["location"],
+            coverage_location=c["location"] if chamber == "House" else None,
             building=c["building"],
             measure=None,
             takeaway=c["takeaway"],
@@ -1783,6 +1830,7 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
         "Votes": [],
         "Floor Action": [],
         "Events": [],
+        "House / Joint Coverage Notes": [],
         "Committee Meetings & Hearings": [],
         "Live Signals": [],
         "Remarks": [],
@@ -3045,6 +3093,7 @@ def dashboard(
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
                                 <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
+                {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view)}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
