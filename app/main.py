@@ -107,6 +107,7 @@ class JoltItem:
     congress_url: Optional[str] = None
     congress_summary: Optional[str] = None
     congress_official_context: Optional[str] = None
+    action_line: str = ""
 
 
 SOURCE_STATUS = {
@@ -841,7 +842,9 @@ def infer_ebb_title(text: str) -> str:
     if "pen and pad" in lower:
         return "Pen and Pad"
 
-    return "Senate Event"
+    if infer_ebb_committee(text) and parse_time(text):
+        return f"{infer_ebb_committee(text)} Event"
+    return "EBB Event"
 
 
 def extract_ebb_room(text: str) -> Optional[str]:
@@ -1177,6 +1180,22 @@ def get_all_items() -> List[JoltItem]:
     items = get_floor_items() + fetch_ebb_items() + fetch_committee_meetings_items() + fetch_x_items()
     for item in items:
         item.press_availability, item.best_window = compute_press_availability(item)
+        if item.status == "historical":
+            item.action_line = "Earlier item. Keep for context only."
+        elif item.category == "Votes" and item.urgency == "move now":
+            item.action_line = "Move to Ohio Clock or chamber exits before Senators clear the floor."
+        elif item.category == "Votes":
+            item.action_line = "Use the post-vote hallway window for reaction."
+        elif item.category in {"Committee Meetings & Hearings"} or ("hearing" in item.title.lower()):
+            item.action_line = "Stage outside the committee room before and after the hearing."
+        elif item.source == "EBB" and item.location and item.location != "Location not parsed":
+            item.action_line = f"Stage at {item.location} before the posted event time."
+        elif item.source == "EBB":
+            item.action_line = "Confirm location on EBB before staging."
+        elif item.category == "Remarks":
+            item.action_line = "Monitor for hallway follow-up if tied to active floor business."
+        else:
+            item.action_line = clean(item.movement_cue) or "Monitor floor updates, EBB, and committee schedule."
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
     return items
@@ -1319,11 +1338,8 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
 
 def top_actions(items: List[JoltItem]) -> List[str]:
     ranked = sorted([x for x in items if x.status != "historical"], key=score_item, reverse=True)[:3]
-    actions = []
-    for it in ranked:
-        place = it.location if it.location and it.location != "Location not parsed" else it.where_to_be
-        actions.append(f"{it.movement_cue.split('.')[0]}. {('Watch ' + it.who_to_watch) if it.who_to_watch else ''} {('Move to ' + place) if place else ''}".strip())
-    return [clean(a) for a in actions if a]
+    actions = [clean((it.action_line or it.movement_cue).split(".")[0]) for it in ranked if (it.action_line or it.movement_cue)]
+    return actions[:3]
 def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
     now = datetime.now()
 
@@ -1376,9 +1392,9 @@ def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
             }
 
     return {
-        "where_to_be_now": "No immediate floor or EBB trigger",
+        "where_to_be_now": "No active location",
         "movement": "Monitor",
-        "watch": "Monitor feeds for next vote or EBB timing signal.",
+        "watch": "No active floor or media-event trigger.",
     }
 
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
@@ -1416,6 +1432,9 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         senators_line = f"<div><strong>{heading}:</strong> {html.escape(', '.join(labels))}</div>" if labels else ""
         speaker_line = f"<div><strong>Speaker:</strong> {html.escape(labels[0])}</div>" if labels else ""
     coverage_line = f"<div><strong>Coverage target:</strong> {html.escape(item.coverage_target)}</div>" if item.coverage_target else ""
+    press_line = f"<div><strong>Press availability:</strong> {html.escape(item.press_availability)}</div>" if item.press_availability in {"Medium", "High"} else ""
+    cov_value = coverage_value_for_item(item)
+    cov_line = f"<div><strong>Coverage value:</strong> {html.escape(cov_value)}</div>" if cov_value in {"Medium", "High"} else ""
 
     note = item.coverage_note
     if view == "staff":
@@ -1447,16 +1466,16 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         {measure}
         <p>{html.escape(item.takeaway)}</p>
         <div class="logistics">
-            <div><strong>Where:</strong> {html.escape(place)}</div>
+            <div><strong>Location:</strong> {html.escape(place)}</div>
             {building}
-            <div><strong>Movement cue:</strong> {html.escape(item.movement_cue)}</div>
-            <div><strong>Who to watch:</strong> {html.escape(item.who_to_watch)}</div>
+            <div><strong>Action:</strong> {html.escape(item.action_line or item.movement_cue)}</div>
+            <div><strong>Watch:</strong> {html.escape(item.who_to_watch)}</div>
             {speaker_line}
             {senators_line}
             {f"<div><strong>Topic:</strong> {html.escape(item.topic)}</div>" if item.topic else ""}
+            {f"<div><strong>Measure:</strong> {html.escape(item.measure)}</div>" if item.measure else ""}
             {coverage_line}
-            <div><strong>Press availability:</strong> {html.escape(item.press_availability)}</div><div><strong>Best window:</strong> {html.escape(item.best_window)}</div><div><strong>Coverage value:</strong> {coverage_value_for_item(item)}</div><div><strong>Source confirmation:</strong> {html.escape(item.source)}</div><div><strong>Note:</strong> {html.escape(note)}</div>
-            <div><strong>Quality:</strong> {html.escape(item.quality)}</div>
+            {press_line}{cov_line}
         </div>
         {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>Measure Link</a>" if item.measure else ""}
         {official_context}
@@ -1470,8 +1489,10 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
 def empty_message(title: str) -> str:
     messages = {
         "Votes": "No active vote window detected. Monitor Congressional Reporters feed and Roll Call Votes.",
-        "News Events": "No scheduled media event parsed from EBB. Check EBB directly for late additions.",
-        "Committee Schedule": "No committee schedule items parsed. Use Congress.gov Committee Schedule or Senate Committee Meetings.",
+        "News Events & Stakeouts": "No media events parsed. Check EBB for late additions.",
+        "Committee Meetings & Hearings": "No committee hearings parsed. Check Congress.gov Committee Schedule and Senate committee pages.",
+        "Key Floor Remarks": "No key floor remarks detected.",
+        "Legislative Notes": "No legislative notes detected.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
@@ -1551,8 +1572,10 @@ def dashboard(
     try:
         all_items = get_all_items()
         items = filter_items(all_items, q, view, show_earlier=earlier)
+        low_signal = [x for x in items if not any([x.time_label, x.location and x.location != "Location not parsed", x.senators_detected, x.measure, x.topic, x.action_line])]
+        main_items = [x for x in items if x not in low_signal]
 
-        groups = grouped(items)
+        groups = grouped(main_items)
         all_groups = grouped(all_items)
 
         now_item = important_now(items)
@@ -1567,12 +1590,7 @@ def dashboard(
             for name, url in QUICK_LINKS
         )
 
-        status_bar = (
-            f"<strong>Congressional Reporters:</strong> {html.escape(friendly_status('congressional_reporters'))} &nbsp; "
-            f"<strong>EBB:</strong> {html.escape(friendly_status('ebb'))} &nbsp; "
-            f"<strong>Congress.gov API:</strong> {html.escape(friendly_status('congress_api'))} &nbsp; "
-            f"<strong>Committee Schedule:</strong> {html.escape(friendly_status('committee_schedule'))}"
-        )
+        status_bar = f"Sources: Congressional Reporters {html.escape(friendly_status('congressional_reporters'))} · EBB {html.escape(friendly_status('ebb'))} · Congress.gov API {html.escape(friendly_status('congress_api'))} · Committee Schedule {html.escape(friendly_status('committee_schedule'))}"
 
         outlook = coverage_outlook(items, groups)
 
@@ -1826,7 +1844,7 @@ def dashboard(
                 </div>
 
                 <div class="ticker">
-                    <strong>WHERE TO BE NOW:</strong> {html.escape(top_banner["where_to_be_now"])}<br><strong>Movement instruction:</strong> {html.escape(top_banner["movement"])}<br><strong>Press availability level:</strong> {html.escape((now_item.press_availability if now_item else "Low"))}<br><strong>Who to watch:</strong> {html.escape(top_banner["watch"])}<br><strong>NEXT MOVE:</strong> {html.escape(next_items[0].movement_cue if next_items else "Monitor — no immediate movement cue.")}<br><strong>WATCH:</strong> {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, committees, and issue actors")}</div>
+                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(top_banner["movement"])}<br>Location: {html.escape(top_banner["where_to_be_now"])}<br>Window: {"next 30" if next_items else "None"}<br>Watch: {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule")}<br>Reason: {html.escape(top_banner["watch"])}<br><strong>NEXT MOVE</strong><br>{html.escape(next_items[0].action_line if next_items else "Monitor floor updates, EBB, and committee schedule.")}</div>
 
                 <div class="status">
                     {status_bar}
@@ -1844,29 +1862,19 @@ def dashboard(
                     <div class="stat"><b>{len([x for x in items if x.urgency == "move now"])}</b>Move now</div>
                 </div>
 
-                <section class="section"><h2>Top 3 Actions Right Now</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(items)) if top_actions(items) else "<p class='empty'>Monitor. No active vote, event, or hearing movement detected.</p>"}</section><div class="topgrid">
-                    <div class="panel">
-                        <h2>Now / Best Coverage Cue</h2>
-                        {item_card(now_item, view) if now_item else '<p class="empty">No active cue detected. Check EBB, committee schedule, or Congressional Reporters feed.</p>'}
-                    </div>
-                    <div class="panel">
-                        <h2>Next 90 Minutes</h2>
-                        {''.join(item_card(x, view) for x in next_items) if next_items else '<p class="empty">No timed items in the next 90 minutes.</p>'}
-                    </div>
-                </div>
+                <section class="section"><h2>Top 3 Actions Right Now</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing movement detected.</p>"}</section>
 
-                {gallery_notes_section()}
                 {section("Where to Be Now", [now_item] if now_item else [], view)}
                 {section("Today’s Coverage Outlook", [now_item] if now_item else [], view, collapsed=True)}
-                
+                {section("Senate Floor Schedule", groups.get("Schedule", []), view)}
                 {section("Key Votes and Schedule", groups.get("Votes", []), view)}
-                {section("Stakeouts", [x for x in groups.get("Events", []) if "stakeout" in x.title.lower()], view)}
-                {section("News Events", groups.get("Events", []), view)}
-                {section("Committee Meetings & Hearings", [x for x in groups.get("Events", []) if x.committee], view)}
-                
+                {section("News Events & Stakeouts", groups.get("Events", []), view)}
+                {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
+                {section("Staff / Gallery Notes", all_groups.get("Floor Action", []), view, collapsed=True)}
                 {section("Key Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
                 {section("Legislative Notes", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Floor Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
+                {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
                 <div class="links">
                     <h2>Helpful Links</h2>
