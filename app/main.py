@@ -1789,18 +1789,23 @@ def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
     for item in items:
         if item.category != "Remarks":
             continue
-        if item.senators_detected or is_meaningful(item.topic):
-            remarks.append(item)
+        if item.senators_detected:
+            senator_name = item.senators_detected[0]
+            remark_line = " · ".join(x for x in [senator_name, item.date_label, item.time_label] if x)
+            normalized = JoltItem(**asdict(item))
+            normalized.title = remark_line
+            normalized.takeaway = ""
+            remarks.append(normalized)
         else:
             unnamed += 1
     if unnamed:
         remarks.append(JoltItem(
             source="Derived",
-            raw=f"Additional floor remarks ({unnamed})",
+            raw=f"Additional remarks ({unnamed})",
             date_label=None, time_label=None, sort_datetime=None, category="Remarks",
-            title=f"Additional floor remarks ({unnamed})", urgency="low", status="inferred",
+            title=f"Additional remarks ({unnamed})", urgency="low", status="inferred",
             confidence="medium", quality="summary", location=None, building=None, measure=None,
-            takeaway=f"Additional floor remarks ({unnamed})", where_to_be="", movement_cue="",
+            takeaway="", where_to_be="", movement_cue="",
             who_to_watch="", coverage_note="", staff_note="", gallery_note="", senators_detected=[],
             coverage_target=None, press_availability="", best_window="", event_type=None, committee=None, url=None, topic=None
         ))
@@ -2185,8 +2190,6 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
         cards = []
         for text in parsed[:6]:
             lower_text = text.lower()
-            if any(x in lower_text for x in ["wrap up for", "confirmed:", "agreed to:", "passed:"]):
-                continue
             action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
             title = extract_measure(text) or text[:90]
             cards.append(f"""
@@ -2196,7 +2199,6 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
                     <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
                 </div>
-                <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
             """)
 
@@ -2209,7 +2211,6 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                     <div><strong>Expected action:</strong> Cloture filed</div>
                     <div><strong>Timing:</strong> Future floor action not yet scheduled</div>
                 </div>
-                <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
             """)
         return "".join(cards) if cards else ""
@@ -2402,10 +2403,26 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         section_name = "Procedural Context"
     logistics_rows = []
     if section_name == "Procedural Context":
-        pass
+        title = " · ".join(x for x in [item.title, item.date_label, item.time_label] if x)
+        return f"""
+        <article class="card">
+            <h3>{html.escape(title)}</h3>
+        </article>
+        """
     elif section_name == "Floor Remarks":
-        ctype = filter_global_boilerplate(item.coverage_type)
-        if is_meaningful(ctype) and ctype != "Committee meeting": logistics_rows.append(("Coverage type", ctype))
+        return f"""
+        <article class="card">
+            <h3>{html.escape(item.title)}</h3>
+        </article>
+        """
+    elif item.category == "Earlier Floor Activity":
+        event_type = item.event_type or item.title
+        line = " · ".join(x for x in [event_type, item.date_label, item.time_label] if x)
+        return f"""
+        <article class="card">
+            <h3>{html.escape(line)}</h3>
+        </article>
+        """
     else:
         if is_meaningful(filter_global_boilerplate(item.coverage_location)): logistics_rows.append(("Coverage location", filter_global_boilerplate(item.coverage_location)))
         if is_meaningful(filter_global_boilerplate(item.coverage_window)): logistics_rows.append(("Coverage window", filter_global_boilerplate(item.coverage_window)))
