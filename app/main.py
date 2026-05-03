@@ -409,6 +409,9 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
     vote_block = {}
     expected_votes = []
+    expected_votes_source = ""
+    vote_block_time_source = ""
+    vote_block_extraction_method = ""
     block_line = None
     block_votes_expected = None
     for line in re.split(r"(?:\n+|(?<=[.])\s+)", accepted):
@@ -431,8 +434,29 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             "time_label": normalize_time_label(raw_time, approximate=True),
             "roll_call_votes_expected": block_votes_expected,
         }
+        vote_block_time_source = clean(time_match.group(0)) if time_match else ""
+        vote_block_extraction_method = "structured_block"
+    if (not vote_block) and next_convening:
+        fallback_match = re.search(
+            r"(At\s+(?:approximately\s+)?(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))\s*,?\s*the\s+Senate\s+will\s+(?:proceed\s+to\s+)?vote[^.]*\.)",
+            accepted,
+            flags=re.I,
+        )
+        if fallback_match:
+            raw_time = fallback_match.group(2)
+            approx = bool(re.search(r"approximately", fallback_match.group(1), flags=re.I))
+            vote_block = {
+                "date": next_convening["date"],
+                "time": normalize_time_label(raw_time, approximate=False),
+                "date_label": next_convening["date_label"],
+                "time_label": normalize_time_label(raw_time, approximate=approx),
+            }
+            vote_block_time_source = clean(fallback_match.group(1))
+            vote_block_extraction_method = "prose_fallback"
+
     cloture_filed = []
     if block_line:
+        expected_votes_source = "structured_block"
         lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
         start_idx = next((i for i, x in enumerate(lines) if block_line in x or x in block_line), None)
         candidate_lines = lines[start_idx + 1:] if start_idx is not None else []
@@ -464,12 +488,31 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
                 seen_votes.add(k)
                 expected_votes.append(s)
 
+    if not expected_votes:
+        vote_sentence = re.search(r"At\s+(?:approximately\s+)?\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)\s*,?\s*the\s+Senate\s+will\s+vote\s+on\s+adoption\s+of\s+(.*?)\s*authorizing\s+the\s+en\s+bloc\s+consideration\s+in\s+Executive\s+Session\s+of\s*\(?([0-9]+)\)?\s*certain\s+nominations\s+on\s+the\s+Executive\s+Calendar", accepted, flags=re.I)
+        if vote_sentence:
+            phrase = clean(vote_sentence.group(1)).rstrip(",")
+            count = vote_sentence.group(2)
+            expected_votes.append(f"Adoption of {phrase} (en bloc consideration of {count} nominations)")
+
+        cloture_sentence = re.search(r"Following disposition of the resolution,\s*the Senate will vote on the motion to invoke cloture on\s+([^.]*)\.", accepted, flags=re.I)
+        if cloture_sentence:
+            ec = clean(cloture_sentence.group(1))
+            expected_votes.append(f"Motion to invoke cloture on {ec} nomination")
+
+        if expected_votes:
+            expected_votes_source = "prose_fallback"
+
     return {
         "pro_formas": pro_formas[:6],
         "next_convening": {k:v for k,v in next_convening.items() if k!="date_obj"},
         "floor_schedule": floor_schedule,
         "vote_block": vote_block,
         "expected_votes": expected_votes[:8],
+        "next_convening_date": next_convening.get("date", ""),
+        "vote_block_time_source": vote_block_time_source,
+        "vote_block_extraction_method": vote_block_extraction_method,
+        "expected_votes_source": expected_votes_source,
         "cloture_filed": list(dict.fromkeys(cloture_filed))[:8],
         "source_label": "Public schedule source",
         "source_url": CONGRESSIONAL_REPORTERS_URL,
@@ -1894,7 +1937,6 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         vote_label = " · ".join(x for x in [vote_block.get("date_label") if vote_block else "", vote_block.get("time_label") if vote_block else ""] if x) or "Not yet announced"
         return f"""
         <div class='card'>
-            <h3>Next Expected Floor Action</h3>
             <div class='logistics'>
                 <div><strong>Pro forma sessions:</strong><ul>{pro_forma_html}</ul></div>
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
