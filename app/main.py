@@ -387,7 +387,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         pro_formas.append({"text": snippet, "date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t)})
 
     next_convening = {}
-    m = re.search(r"(?:will next convene|next convene at)\s+at?\s*(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).*?on\s+((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)", accepted, flags=re.I)
+    m = re.search(r"(?:will\s+next\s+convene\s+at|next\s+convene\s+at)\s*(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).*?on\s+((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)", accepted, flags=re.I)
     if m:
         d = parse_schedule_date(m.group(2))
         t = parse_time(m.group(1))
@@ -539,6 +539,8 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "vote_block": vote_block,
         "expected_votes": expected_votes[:8],
         "next_convening_date": next_convening.get("date", ""),
+        "next_convening_time_label": next_convening.get("time_label", ""),
+        "vote_block_time_label": vote_block.get("time_label", ""),
         "vote_block_time_source": vote_block_time_source,
         "raw_vote_block_time": raw_vote_block_time,
         "normalized_vote_block_time": normalized_vote_block_time,
@@ -1993,17 +1995,22 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         pro_forma_html = "".join(
             f"<li>{html.escape(p.get('date_label', ''))} · {html.escape(p.get('time_label', ''))}</li>" for p in pro_formas
         ) or "<li>None announced</li>"
-        convene_label = "Monday, May 11, 2026"
-        vote_label = "No vote block announced."
-        if re.search(r"at approximately 5:30\s*p\.?m\.?", source_text, flags=re.IGNORECASE):
-            vote_label = "Monday, May 11, 2026 · approx. 5:30 p.m."
-        votes_html = "".join(
-            f"<li>{html.escape(v)}</li>"
-            for v in [
-                "Adoption of Calendar #5, S.Res.690 (en bloc consideration of 49 nominations)",
-                "Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination",
-            ]
-        )
+        next_convening = schedule_context.get("next_convening", {})
+        vote_block = schedule_context.get("vote_block", {})
+        expected_votes = schedule_context.get("expected_votes", [])
+
+        convene_label = " · ".join(x for x in [next_convening.get("date_label", ""), next_convening.get("time_label", "")] if x) or "Not announced"
+
+        vote_date = vote_block.get("date_label", "") or next_convening.get("date_label", "")
+        vote_time = vote_block.get("time_label", "")
+        if vote_date and vote_time:
+            vote_label = f"{vote_date} · {vote_time}"
+        elif expected_votes and vote_date:
+            vote_label = f"{vote_date} · time not parsed"
+        else:
+            vote_label = "No vote block announced."
+
+        votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in expected_votes) or "<li>None announced</li>"
         return f"""
         <div class='card'>
             <!-- forward schedule renderer fixed -->
@@ -2814,6 +2821,9 @@ def debug_raw():
         "homepage_vote_block_value": (forward_context.get("parsed_forward_schedule", {}).get("vote_block", {}) or {}).get("time_label", ""),
         "raw_vote_time_match": forward_context.get("raw_vote_block_time", ""),
         "normalized_vote_time_label": forward_context.get("normalized_vote_block_time", ""),
+        "next_convening_time_label": forward_context.get("parsed_forward_schedule", {}).get("next_convening_time_label", ""),
+        "vote_block_time_label": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_label", ""),
+        "vote_block_time_source": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_source", ""),
         "expected_votes_final": forward_context.get("parsed_forward_schedule", {}).get("expected_votes", []),
         "renderer_source_function": "render_next_expected_floor_action",
         "forward_schedule_source_text": forward_context.get("forward_schedule_source_text", ""),
