@@ -2151,19 +2151,9 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         vote_block = schedule_context.get("vote_block", {})
         expected_votes = schedule_context.get("expected_votes", [])
 
-        lower_source = source_text.lower()
         convene_label = " · ".join(x for x in [next_convening.get("date_label", ""), next_convening.get("time_label", "")] if x) or "Not announced"
-        vote_label = "Monday, May 11, 2026 · approx. 5:30 p.m."
-
-        if "next convene at 3:00pm on monday, may 11, 2026" in lower_source:
-            convene_label = "Monday, May 11, 2026 · 3:00 p.m."
-
-        if (
-            "at approximately 5:30pm, the senate will vote" in lower_source
-            or "monday, may 11th at approx. 5:30pm – 2 roll call votes expected" in lower_source
-            or "monday, may 11th at approx. 5:30pm - 2 roll call votes expected" in lower_source
-        ):
-            vote_label = "Monday, May 11, 2026 · approx. 5:30 p.m."
+        vote_block_time_label = schedule_context.get("vote_block_time_label", "")
+        vote_label = " · ".join(x for x in [vote_block.get("date_label", ""), vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
         fixed_votes = [
             "Adoption of Calendar #5, S.Res.690 (en bloc consideration of 49 nominations)",
@@ -2232,12 +2222,12 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
-    vote_timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block.get("time_label")] if x) or "Future floor action not yet scheduled"
+    vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
+    vote_timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block_time_label] if x) or "Future floor action not yet scheduled"
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
 
     if parsed:
         cards = []
-        default_timing = "Monday, May 11, 2026 · approx. 5:30 p.m."
         for text in parsed[:6]:
             lower_text = text.lower()
             action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
@@ -2251,7 +2241,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <h3>{html.escape(title)}</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
-                    <div><strong>Timing:</strong> {html.escape(default_timing if vote_timing == "Future floor action not yet scheduled" else vote_timing)}</div>
+                    <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
                     <div><strong>Chamber phase:</strong> Executive session</div>
                     <div><strong>Context:</strong> {html.escape('En bloc consideration of 49 nominations.' if 's.res.690' in lower_text or 'calendar #5' in lower_text else 'Vote on whether to limit debate on the nomination.' if 'cloture' in lower_text and 'warsh' in lower_text else 'Expected floor consideration from current schedule sources.')}</div>
                 </div>
@@ -2265,7 +2255,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <h3>Executive Calendar #727 Kevin Warsh</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> Cloture filed</div>
-                    <div><strong>Timing:</strong> Future action not yet scheduled</div>
+                    <div><strong>Timing:</strong> future action not yet scheduled</div>
                     <div><strong>Chamber phase:</strong> Executive session</div>
                     <div><strong>Context:</strong> Cloture has been filed, signaling possible future floor consideration.</div>
                 </div>
@@ -2577,11 +2567,11 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
 
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
+    vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
     next_votes_line = ""
-    if vote_block.get("date_label") or vote_block.get("time_label"):
+    if vote_block.get("date_label") or vote_block_time_label:
         next_date = vote_block.get("date_label", "").replace(", 2026", "")
-        next_time = vote_block.get("time_label", "")
-        next_votes_line = f"Next expected votes: {next_date} · {next_time}."
+        next_votes_line = f"Next expected votes: {next_date} · {vote_block_time_label}"
     fallback = "No votes scheduled today."
     message = f"{fallback}<br>{html.escape(next_votes_line)}" if next_votes_line else fallback
     return f"""
