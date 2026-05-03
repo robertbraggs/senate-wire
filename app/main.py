@@ -14,6 +14,11 @@ from functools import lru_cache
 APP_NAME = "The Senate JOLT"
 CONGRESSIONAL_REPORTERS_URL = "https://www.dailypress.senate.gov/"
 EBB_URL = "https://ebbs.senate.gov/"
+RADIO_TV_URL = "https://www.radiotv.senate.gov/"
+SENATE_DEMS_SCHEDULE_URL = "https://www.democrats.senate.gov/floor/senate-schedule"
+SENATE_DEMS_FLOOR_URL = "https://www.democrats.senate.gov/floor"
+EXECUTIVE_CALENDAR_URL = "https://www.senate.gov/legislative/LIS/executive_calendar/xcalv.pdf"
+FLOOR_ACTIVITY_URL = "https://www.senate.gov/legislative/floor_activity_pail.htm"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 
 app = FastAPI(title=APP_NAME, version="8.0.0")
@@ -195,6 +200,7 @@ SOURCE_STATUS = {
     "committee_schedule": "linked",
     "congressional_record": "linked/API available",
 }
+LAST_FORWARD_SCHEDULE_DEBUG: Dict[str, Any] = {}
 
 
 def clean(text: str) -> str:
@@ -209,6 +215,77 @@ def fetch_url(url: str, timeout: int = 20) -> str:
     )
     r.raise_for_status()
     return r.text
+
+
+def fetch_forward_schedule_sources() -> Dict[str, Any]:
+    sources = [
+        ("daily_press", CONGRESSIONAL_REPORTERS_URL, False),
+        ("radio_tv", RADIO_TV_URL, False),
+        ("senate_dems_schedule", SENATE_DEMS_SCHEDULE_URL, False),
+        ("senate_dems_floor", SENATE_DEMS_FLOOR_URL, False),
+        ("executive_calendar", EXECUTIVE_CALENDAR_URL, True),
+        ("floor_activity", FLOOR_ACTIVITY_URL, False),
+    ]
+    loaded = []
+    texts = []
+    errors = {}
+    for key, url, is_pdf in sources:
+        try:
+            if is_pdf:
+                text = fetch_url(url, timeout=20)
+            else:
+                soup = BeautifulSoup(fetch_url(url, timeout=20), "html.parser")
+                remove_noise(soup)
+                text = clean(soup.get_text(" "))
+            if text:
+                loaded.append({"key": key, "url": url})
+                texts.append({"key": key, "url": url, "text": text[:20000]})
+        except Exception as exc:
+            errors[key] = str(exc)
+    return {"loaded_sources": loaded, "texts": texts, "errors": errors}
+
+
+def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
+    if not text:
+        return []
+    patterns = [
+        r"(The Senate will next convene[^.]*\.)",
+        r"([^.]*will next convene at[^.]*\.)",
+        r"([^.]*next convene on[^.]*\.)",
+        r"([^.]*pro forma session[^.]*\.)",
+        r"([^.]*pro forma sessions only[^.]*\.)",
+        r"(At\s+\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)[^.]*roll call votes?[^.]*\.)",
+        r"([^.]*Following Leader remarks[^.]*\.)",
+        r"([^.]*period of morning business[^.]*\.)",
+        r"([^.]*proceed to Executive Session[^.]*\.)",
+        r"([^.]*vote on adoption[^.]*\.)",
+        r"([^.]*motion to invoke cloture[^.]*\.)",
+        r"([^.]*cloture on [^.]*\.)",
+        r"([^.]*confirmation of [^.]*\.)",
+    ]
+    actions = []
+    for pattern in patterns:
+        for m in re.finditer(pattern, text, flags=re.I):
+            snippet = clean(m.group(1))
+            d = parse_date(snippet)
+            t = parse_time(snippet)
+            actions.append({
+                "text": snippet,
+                "date_label": fmt_date(d) or "",
+                "time_label": fmt_time(t) or "",
+                "sort_datetime": sort_dt(d, t) or "",
+                "source_hint": "public schedule source",
+            })
+    # de-dupe
+    seen = set()
+    unique = []
+    for a in actions:
+        k = a["text"].lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        unique.append(a)
+    return sorted(unique, key=lambda x: (x["sort_datetime"] == "", x["sort_datetime"] or "9999"))[:20]
 
 
 def remove_noise(soup: BeautifulSoup) -> None:
@@ -1561,7 +1638,44 @@ def build_next_expected_floor_action(items: List[JoltItem]) -> Optional[JoltItem
     return sorted(candidates, key=lambda x: x.signal_score, reverse=True)[0]
 
 
-def render_next_expected_floor_action(item: Optional[JoltItem]) -> str:
+def build_forward_schedule_context() -> Dict[str, Any]:
+    global LAST_FORWARD_SCHEDULE_DEBUG
+    payload = fetch_forward_schedule_sources()
+    merged = " ".join(x["text"] for x in payload["texts"])
+    actions = extract_next_floor_actions(merged)
+    vote_related = [a for a in actions if any(k in a["text"].lower() for k in ["vote", "cloture", "confirmation", "adoption"])]
+    LAST_FORWARD_SCHEDULE_DEBUG = {
+        "loaded_sources": payload["loaded_sources"],
+        "errors": payload["errors"],
+        "extracted_forward_schedule_text": merged[:5000],
+        "parsed_next_floor_actions": actions,
+        "parsed_forward_look_items": vote_related[:8],
+    }
+    return LAST_FORWARD_SCHEDULE_DEBUG
+
+
+def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[str, Any]) -> str:
+    parsed_actions = context.get("parsed_next_floor_actions", []) if context else []
+    if parsed_actions:
+        first = parsed_actions[0]
+        rows = []
+        for a in parsed_actions[:5]:
+            when = " · ".join(x for x in [a.get("date_label"), a.get("time_label")] if x) or "Time TBD"
+            rows.append(f"<li><strong>{html.escape(when)}</strong> — {html.escape(a.get('text', ''))}</li>")
+        return f"""
+        <div class='card'>
+            <h3>{html.escape(' · '.join(x for x in [first.get('date_label'), first.get('time_label')] if x) or 'Upcoming floor schedule')}</h3>
+            <p><strong>{html.escape(first.get('text', 'Public schedule floor action'))}</strong></p>
+            <div class='logistics'>
+                <div><strong>Legislative context:</strong> The Senate is scheduled for upcoming floor business based on public schedule source language.</div>
+                <div><strong>Coverage timing:</strong> Coverage begins around convening; the higher-value public coverage window is the announced vote block.</div>
+                <div><strong>Public value:</strong> The next convening and vote block set likely floor coverage windows.</div>
+            </div>
+            <ul>{''.join(rows)}</ul>
+            <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
+        </div>
+        """
+
     if not item:
         return "<p class='empty'>No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.</p>"
 
@@ -1585,7 +1699,28 @@ def render_next_expected_floor_action(item: Optional[JoltItem]) -> str:
     """
 
 
-def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem]) -> str:
+def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
+    parsed = context.get("parsed_forward_look_items", []) if context else []
+    if parsed:
+        cards = []
+        for a in parsed[:6]:
+            text = a.get("text", "")
+            action = "Cloture vote" if "cloture" in text.lower() else "Adoption vote" if "adoption" in text.lower() else "Expected floor action"
+            chamber_phase = "Executive session" if "executive" in text.lower() or "nomination" in text.lower() else "Legislative business"
+            when = " · ".join(x for x in [a.get("date_label"), a.get("time_label")] if x) or "Time TBD"
+            cards.append(f"""
+            <article class='card'>
+                <h3>{html.escape(extract_measure(text) or text[:90])}</h3>
+                <div class='logistics'>
+                    <div><strong>Expected action:</strong> {html.escape(action)}</div>
+                    <div><strong>Timing window:</strong> {html.escape(when)}</div>
+                    <div><strong>Chamber phase:</strong> {html.escape(chamber_phase)}</div>
+                    <div><strong>Legislative context:</strong> {html.escape(text)}</div>
+                </div>
+                <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
+            </article>
+            """)
+        return "".join(cards)
     include_tokens = ["cloture", "motion to proceed", "confirmation", "nomination", "passage", "roll call", "executive", "s.", "h.r.", "resolution"]
     out = []
     featured_key = (featured.title, featured.sort_datetime, featured.measure) if featured else None
@@ -1932,6 +2067,7 @@ def dashboard(
     try:
         all_items = get_all_items()
         items = filter_items(all_items, q, view, show_earlier=earlier)
+        forward_context = build_forward_schedule_context()
         low_signal = [x for x in items if not any([x.time_label, x.location and x.location != "Location not parsed", x.senators_detected, x.measure, x.topic, x.action_line])]
         main_items = [x for x in items if x not in low_signal]
 
@@ -2228,16 +2364,16 @@ def dashboard(
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
                 </div>
 
-                <section class="section"><h2>Next Expected Floor Action</h2>{render_next_expected_floor_action(build_next_expected_floor_action(items))}</section>
+                <section class="section"><h2>Next Expected Floor Action</h2>{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
 
                 <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
+                <section class="section"><h2>Active Signals summary</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
                                 {section("Senate Floor Activity", groups.get("Schedule", []), view)}
                 {section("Key Votes", groups.get("Votes", []), view)}
+                                <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
-                <section class="section"><h2>Active Signals summary</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
-                                <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items))}</section>
                 {section("Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
                 {section("Procedural Context", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
@@ -2296,6 +2432,7 @@ def summary_endpoint():
 def debug_raw():
     floor_text = extract_congressional_reporters_text()
     ebb_items = fetch_ebb_items()
+    forward_context = build_forward_schedule_context()
 
     return {
         "congressional_reporters_source": CONGRESSIONAL_REPORTERS_URL,
@@ -2304,6 +2441,7 @@ def debug_raw():
         "floor_preview": floor_text[:2500],
         "floor_raw": split_floor_events(floor_text),
         "ebb_items": [asdict(x) for x in ebb_items],
+        "forward_schedule_diagnostics": forward_context,
         "items": [asdict(x) for x in get_all_items()],
     }
 
