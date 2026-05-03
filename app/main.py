@@ -2548,29 +2548,13 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
 
 
 def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], view: str) -> str:
-    today = datetime.now().date()
-    todays_votes: List[JoltItem] = []
-    for item in votes:
-        if not item.sort_datetime:
-            continue
-        try:
-            dt = datetime.fromisoformat(item.sort_datetime)
-            if dt.tzinfo is not None:
-                dt = dt.replace(tzinfo=None)
-            if dt.date() == today:
-                todays_votes.append(item)
-        except ValueError:
-            continue
-
-    if todays_votes:
-        return section("Key Votes", todays_votes, view)
-
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
     vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
+    vote_block_date = vote_block.get("date_label", "")
     next_votes_line = ""
-    if vote_block.get("date_label") or vote_block_time_label:
-        next_date = vote_block.get("date_label", "").replace(", 2026", "")
+    if vote_block_date or vote_block_time_label:
+        next_date = vote_block_date.replace(", 2026", "")
         next_votes_line = f"Next expected votes: {next_date} · {vote_block_time_label}"
     fallback = "No votes scheduled today."
     message = f"{fallback}<br>{html.escape(next_votes_line)}" if next_votes_line else fallback
@@ -3134,6 +3118,7 @@ def debug_raw():
         "next_convening_time_label": forward_context.get("parsed_forward_schedule", {}).get("next_convening_time_label", ""),
         "vote_block_time_label": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_label", ""),
         "vote_block_time_source": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_source", ""),
+        "key_votes_time_source": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_label", ""),
         "expected_votes_final": forward_context.get("parsed_forward_schedule", {}).get("expected_votes", []),
         "renderer_source_function": "render_next_expected_floor_action",
         "forward_schedule_source_text": forward_context.get("forward_schedule_source_text", ""),
