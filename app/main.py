@@ -202,6 +202,20 @@ SOURCE_STATUS = {
 }
 LAST_FORWARD_SCHEDULE_DEBUG: Dict[str, Any] = {}
 
+PLACEHOLDER_VALUES = {
+    "tbd","room tbd","rolling","floor update","no pool note",
+    "monitor source before moving","relevant senators named in the update",
+    "the senate is considering current floor business and related procedural actions",
+    "a senator made floor remarks","general floor update"
+}
+
+
+def is_meaningful(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    v = clean(str(value)).strip()
+    return bool(v) and v.lower() not in PLACEHOLDER_VALUES
+
 
 def clean(text: str) -> str:
     return " ".join((text or "").replace("\xa0", " ").split()).strip()
@@ -330,6 +344,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
                 ignored_dates.append(clean(m.group(1)))
 
     pro_formas = []
+    pro_forma_seen = set()
     for m in re.finditer(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+([A-Z][a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\s+at\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", accepted, flags=re.I):
         snippet = clean(m.group(0))
         span_start = max(0, m.start()-120)
@@ -341,6 +356,12 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         t = parse_time(snippet)
         if not d or d < today:
             continue
+        if d.year > today.year and str(d.year) not in accepted:
+            continue
+        key = (d.isoformat(), fmt_time(t) or "")
+        if key in pro_forma_seen:
+            continue
+        pro_forma_seen.add(key)
         pro_formas.append({"text": snippet, "date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t)})
 
     next_convening = {}
@@ -361,15 +382,26 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
     expected_votes = []
     cloture_filed = []
+    seen_votes = set()
     for sent in re.split(r"(?<=[.])\s+", accepted):
         s = clean(sent)
         ls = s.lower()
-        if any(x in ls for x in ["wrap up for", "for a term of", "term expiring", "confirmed:", "agreed to:"]):
+        if any(x in ls for x in ["wrap up for", "for a term of", "term expiring", "confirmed:", "agreed to:", "the senate is now voting"]):
             continue
+        candidate = None
         if "will vote on" in ls:
-            expected_votes.append(s.split("will vote on",1)[1].strip().rstrip("."))
-        if "motion to invoke cloture" in ls:
-            expected_votes.append(s.rstrip("."))
+            candidate = clean(s.split("will vote on",1)[1].strip().rstrip("."))
+            if candidate.lower().startswith("adoption of"):
+                candidate = candidate[0].upper()+candidate[1:]
+        elif "motion to invoke cloture" in ls and ("will vote" in ls or "following disposition" in ls):
+            m2 = re.search(r"(motion to invoke cloture[^.]+)", s, flags=re.I)
+            candidate = clean(m2.group(1)) if m2 else clean(s.rstrip('.'))
+            candidate = candidate[0].upper()+candidate[1:]
+        if candidate and len(candidate) > 20:
+            k = candidate.lower()
+            if k not in seen_votes:
+                seen_votes.add(k)
+                expected_votes.append(candidate)
         if "filed cloture" in ls or "cloture filed" in ls:
             cloture_filed.append(s.rstrip("."))
 
@@ -1555,9 +1587,16 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
     }
 
     for item in items:
+        if item.category == "Notes":
+            raw = f"{item.title} {item.raw}".lower()
+            procedural_terms = ["cloture filed","cloture invoked","motion to proceed","unanimous consent","objected","passage","confirmed","quorum","recess","adjourn","executive session"]
+            if not any(t in raw for t in procedural_terms):
+                item.category = "Low-Signal Items"
+        if item.category == "Remarks" and not (item.senators_detected or is_meaningful(item.topic)):
+            item.category = "Low-Signal Items"
         g.setdefault(item.category, []).append(item)
 
-        if item.category not in {"Notes", "Remarks", "Earlier Floor Activity"}:
+        if item.category not in {"Notes", "Remarks", "Earlier Floor Activity", "Low-Signal Items"}:
             g["Coverage Timeline"].append(item)
 
     return g
@@ -2031,29 +2070,7 @@ def badge_class(urgency: str) -> str:
 
 
 def item_card(item: JoltItem, view: str = "reporter") -> str:
-    when = " ".join(x for x in [item.time_label, item.date_label] if x) or "Time TBD"
-
-    if item.category == "Committee Meetings & Hearings":
-        title = "Committee Meeting"
-        when = item.time_label or "Time TBD"
-        description = "Official Senate committee meeting listing."
-        coverage_location = item.coverage_location or "Room TBD"
-        coverage_window = item.coverage_window if item.coverage_window and item.coverage_window != "none" else "Rolling"
-        coverage_guidance = "Coverage typically centers near the committee room before and after the hearing."
-        who_to_watch = "Committee members, witnesses, and participating Senators."
-        coverage_type = "Committee hearing" if "hearing" in f"{item.title} {item.raw}".lower() else "Committee meeting"
-        legislative_context = "A Senate committee is holding a scheduled meeting or hearing."
-        why_it_matters = "Official committee activity that may generate news or member availability."
-    else:
-        title = item.title
-        description = item.takeaway
-        coverage_location = item.coverage_location or "No active coverage location"
-        coverage_window = item.coverage_window or "Rolling"
-        coverage_guidance = item.coverage_action or item.action_line or item.movement_cue
-        who_to_watch = item.who_to_watch
-        coverage_type = item.coverage_type
-        legislative_context = item.legislative_context
-        why_it_matters = item.public_value
+    when = " · ".join(x for x in [item.date_label, item.time_label] if is_meaningful(x)) or "Time TBD"
 
     links = []
     if item.committee:
@@ -2063,20 +2080,43 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     elif item.url:
         links.append(f"<a class='source' href='{html.escape(item.url)}' target='_blank'>{'Open Congressional Reporters' if item.source == 'Congressional Reporters' else 'Open source'}</a>")
 
+    if item.category == "Committee Meetings & Hearings":
+        has_real_details = any([
+            is_meaningful(item.committee), is_meaningful(item.topic), is_meaningful(item.location), is_meaningful(item.time_label)
+        ])
+        if not has_real_details:
+            return f"""
+            <article class="card">
+                <h3>Committee Meeting</h3>
+                <div class="when">Time TBD</div>
+                <p>Official Senate committee meeting listing.</p>
+                <a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>
+                {''.join(links)}
+            </article>
+            """
+
+    title = item.title
+    description = item.takeaway if is_meaningful(item.takeaway) else ""
+
+    logistics_rows = []
+    if is_meaningful(item.coverage_location): logistics_rows.append(("Coverage location", item.coverage_location))
+    if is_meaningful(item.coverage_window): logistics_rows.append(("Coverage window", item.coverage_window))
+    if is_meaningful(item.coverage_action or item.action_line): logistics_rows.append(("Coverage guidance", item.coverage_action or item.action_line))
+    if is_meaningful(item.who_to_watch): logistics_rows.append(("Who to watch", item.who_to_watch))
+    if is_meaningful(item.coverage_type): logistics_rows.append(("Coverage type", item.coverage_type))
+    if is_meaningful(item.legislative_context): logistics_rows.append(("Legislative context", item.legislative_context))
+    if is_meaningful(item.public_value): logistics_rows.append(("Why it matters", item.public_value))
+
+    logistics = ""
+    if logistics_rows:
+        logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k,v in logistics_rows) + "</div>"
+
     return f"""
     <article class="card">
         <h3>{html.escape(title)}</h3>
         <div class="when">{html.escape(when)}</div>
-        <p>{html.escape(description)}</p>
-        <div class="logistics">
-            <div><strong>Coverage location:</strong> {html.escape(coverage_location)}</div>
-            <div><strong>Coverage window:</strong> {html.escape(coverage_window)}</div>
-            <div><strong>Coverage guidance:</strong> {html.escape(coverage_guidance)}</div>
-            <div><strong>Who to watch:</strong> {html.escape(who_to_watch)}</div>
-            <div><strong>Coverage type:</strong> {html.escape(coverage_type)}</div>
-            {f"<div><strong>Legislative context:</strong> {html.escape(legislative_context)}</div>" if legislative_context else ""}
-            {f"<div><strong>Why it matters:</strong> {html.escape(why_it_matters)}</div>" if why_it_matters else ""}
-        </div>
+        {f"<p>{html.escape(description)}</p>" if description else ""}
+        {logistics}
         {''.join(links)}
     </article>
     """
