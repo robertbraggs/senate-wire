@@ -1813,20 +1813,55 @@ def build_procedural_context(items: List[JoltItem]) -> List[JoltItem]:
     for item in items:
         raw = f"{item.title} {item.raw}".lower()
         title = None
+        pkey = None
         if "cloture filed" in raw or "filed cloture" in raw:
             title = "Cloture filed on nomination"
+            pkey = "cloture filed"
         elif "cloture vote" in raw or "motion to invoke cloture" in raw or "invoked cloture" in raw:
             title = "Cloture vote held"
+            pkey = "cloture vote"
         elif "unanimous consent" in raw:
             title = "Unanimous consent action"
+            pkey = "unanimous consent"
         elif "adjourn" in raw:
             title = "Senate adjourned"
+            pkey = "adjournment"
         elif "vote underway" in raw or "now voting" in raw:
             title = "Vote underway"
-        if title and title not in seen:
-            item.title = title
-            out.append(item)
-            seen.add(title)
+            pkey = "vote underway"
+        if title and pkey and pkey not in seen:
+            out.append(JoltItem(
+                source=item.source,
+                raw=item.raw,
+                date_label=item.date_label,
+                time_label=item.time_label,
+                sort_datetime=item.sort_datetime,
+                category="Notes",
+                title=title,
+                urgency="low",
+                status=item.status,
+                confidence=item.confidence,
+                quality=item.quality,
+                location=None,
+                building=None,
+                measure=None,
+                takeaway="",
+                where_to_be="",
+                movement_cue="",
+                who_to_watch="",
+                coverage_note="",
+                staff_note="",
+                gallery_note="",
+                senators_detected=[],
+                coverage_target=None,
+                press_availability="",
+                best_window="",
+                event_type=None,
+                committee=None,
+                url=item.url,
+                topic=None,
+            ))
+            seen.add(pkey)
     return out
 
 
@@ -2177,7 +2212,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
             """)
-        return "".join(cards) if cards else "<p class='empty'>No upcoming legislation or nomination signals found in public sources.</p>"
+        return "".join(cards) if cards else ""
 
     include_tokens = ["cloture", "motion to proceed", "confirmation", "nomination", "passage", "roll call", "executive", "s.", "h.r.", "resolution"]
     out = []
@@ -2360,19 +2395,30 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     title = item.title
     description = item.takeaway if is_meaningful(item.takeaway) else ""
 
+    section_name = ""
+    if item.category == "Remarks":
+        section_name = "Floor Remarks"
+    elif item.title in {"Cloture filed on nomination", "Cloture vote held", "Unanimous consent action", "Senate adjourned", "Vote underway"}:
+        section_name = "Procedural Context"
     logistics_rows = []
-    if is_meaningful(filter_global_boilerplate(item.coverage_location)): logistics_rows.append(("Coverage location", filter_global_boilerplate(item.coverage_location)))
-    if is_meaningful(filter_global_boilerplate(item.coverage_window)): logistics_rows.append(("Coverage window", filter_global_boilerplate(item.coverage_window)))
-    guidance = filter_global_boilerplate(item.coverage_action or item.action_line)
-    if is_meaningful(guidance): logistics_rows.append(("Coverage guidance", guidance))
-    watch = filter_global_boilerplate(item.who_to_watch)
-    if is_meaningful(watch) and watch != "Senate Committee": logistics_rows.append(("Who to watch", watch))
-    ctype = filter_global_boilerplate(item.coverage_type)
-    if is_meaningful(ctype) and ctype != "Committee meeting": logistics_rows.append(("Coverage type", ctype))
-    lc = filter_global_boilerplate(item.legislative_context)
-    if is_meaningful(lc) and lc != "A Senate committee is holding a scheduled meeting or hearing.": logistics_rows.append(("Legislative context", lc))
-    pv = filter_global_boilerplate(item.public_value)
-    if is_meaningful(pv) and pv != "Official Senate committee meeting listing.": logistics_rows.append(("Why it matters", pv))
+    if section_name == "Procedural Context":
+        pass
+    elif section_name == "Floor Remarks":
+        ctype = filter_global_boilerplate(item.coverage_type)
+        if is_meaningful(ctype) and ctype != "Committee meeting": logistics_rows.append(("Coverage type", ctype))
+    else:
+        if is_meaningful(filter_global_boilerplate(item.coverage_location)): logistics_rows.append(("Coverage location", filter_global_boilerplate(item.coverage_location)))
+        if is_meaningful(filter_global_boilerplate(item.coverage_window)): logistics_rows.append(("Coverage window", filter_global_boilerplate(item.coverage_window)))
+        guidance = filter_global_boilerplate(item.coverage_action or item.action_line)
+        if is_meaningful(guidance): logistics_rows.append(("Coverage guidance", guidance))
+        watch = filter_global_boilerplate(item.who_to_watch)
+        if is_meaningful(watch) and watch != "Senate Committee": logistics_rows.append(("Who to watch", watch))
+        ctype = filter_global_boilerplate(item.coverage_type)
+        if is_meaningful(ctype) and ctype != "Committee meeting": logistics_rows.append(("Coverage type", ctype))
+        lc = filter_global_boilerplate(item.legislative_context)
+        if is_meaningful(lc) and lc != "A Senate committee is holding a scheduled meeting or hearing.": logistics_rows.append(("Legislative context", lc))
+        pv = filter_global_boilerplate(item.public_value)
+        if is_meaningful(pv) and pv != "Official Senate committee meeting listing.": logistics_rows.append(("Why it matters", pv))
 
     logistics = ""
     if logistics_rows:
@@ -2406,7 +2452,7 @@ def empty_message(title: str) -> str:
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
     if collapsed:
-        limit = 7 if title == "Earlier Activity" else 20
+        limit = 5 if title == "Earlier Activity" else 20
         visible = items[:limit]
         cards = "".join(item_card(item, view) for item in visible)
         hidden_count = max(0, len(items) - limit)
@@ -2542,7 +2588,13 @@ def dashboard(
         all_groups = grouped(all_items)
         floor_remarks_items = build_floor_remarks(all_groups.get("Remarks", []))
         procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
-        earlier_items = all_groups.get("Earlier Floor Activity", [])
+        procedural_keys = {x.title.lower() for x in procedural_items}
+        suppressed_earlier_terms = ["cloture filed", "cloture vote", "unanimous consent", "adjourn", "vote underway", "now voting"]
+        earlier_items = [
+            x for x in all_groups.get("Earlier Floor Activity", [])
+            if not any(t in f"{x.title} {x.raw}".lower() for t in suppressed_earlier_terms)
+            and x.title.lower() not in procedural_keys
+        ]
 
         now_item = important_now(items)
         next_items = next_90(items)
