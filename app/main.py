@@ -288,6 +288,73 @@ def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
     return sorted(unique, key=lambda x: (x["sort_datetime"] == "", x["sort_datetime"] or "9999"))[:20]
 
 
+def parse_schedule_context(text: str) -> Dict[str, Any]:
+    cleaned = clean(text)
+    lower = cleaned.lower()
+    today = date.today()
+    ignored_dates = []
+
+    ignore_patterns = [
+        r"for a term of [^.]*? from ([A-Z][a-z]+ \d{1,2}, \d{4})",
+        r"term expiring[^.]*?([A-Z][a-z]+ \d{1,2}, \d{4})",
+        r"\bvice\b[^.]*",
+        r"\bfrom ([A-Z][a-z]+ \d{1,2}, \d{4})",
+    ]
+    for pat in ignore_patterns:
+        for m in re.finditer(pat, cleaned, flags=re.I):
+            ignored_dates.append(clean(m.group(0)))
+
+    pro_formas = []
+    for m in re.finditer(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+([A-Z][a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\s+at\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", cleaned, flags=re.I):
+        snippet = clean(m.group(0))
+        d = parse_date(snippet)
+        if not d:
+            continue
+        if not re.search(r"pro forma", lower):
+            continue
+        if d < today:
+            continue
+        t = parse_time(snippet)
+        pro_formas.append({"text": snippet, "date_label": fmt_date(d), "time_label": fmt_time(t), "sort_datetime": sort_dt(d, t)})
+
+    next_convening = None
+    m = re.search(r"next convene at\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))\s+on\s+([^.]+?)(?:\.|At approximately|Following|Then)", cleaned, flags=re.I)
+    if m:
+        snippet = clean(m.group(0))
+        d = parse_date(snippet)
+        t = parse_time(snippet)
+        if d and d >= today:
+            next_convening = {"text": snippet, "date_label": fmt_date(d), "time_label": fmt_time(t), "sort_datetime": sort_dt(d, t)}
+
+    vote_block = None
+    m = re.search(r"At approximately\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", cleaned, flags=re.I)
+    if m:
+        t = parse_time(m.group(0))
+        d = parse_date(cleaned) or (datetime.fromisoformat(next_convening["sort_datetime"]).date() if next_convening and next_convening.get("sort_datetime") else None)
+        vote_block = {"text": clean(m.group(0)), "date_label": fmt_date(d) if d else "", "time_label": f"approx. {fmt_time(t)}" if t else "", "sort_datetime": sort_dt(d, t) if d and t else ""}
+
+    expected_votes = []
+    for sent in re.split(r"(?<=[.])\s+", cleaned):
+        s = clean(sent)
+        ls = s.lower()
+        if any(x in ls for x in ["wrap up for", "confirmed:", "agreed to:", "passed:"]):
+            continue
+        if any(x in ls for x in ["vote on adoption", "motion to invoke cloture", "cloture on"]):
+            expected_votes.append(s)
+
+    cloture_filed_list = [s for s in expected_votes if "cloture" in s.lower()]
+    return {
+        "pro_forma_sessions": pro_formas[:6],
+        "next_convening": next_convening,
+        "leader_remarks": "Following Leader remarks" if "following leader remarks" in lower else "",
+        "morning_business": "period of morning business" if "morning business" in lower else "",
+        "vote_block_time": vote_block,
+        "expected_votes": expected_votes[:8],
+        "cloture_filed_list": cloture_filed_list[:8],
+        "ignored_dates": ignored_dates[:20],
+    }
+
+
 def remove_noise(soup: BeautifulSoup) -> None:
     for selector in [
         "script", "style", "noscript", "nav", "header", "footer", "aside",
@@ -1642,6 +1709,7 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     global LAST_FORWARD_SCHEDULE_DEBUG
     payload = fetch_forward_schedule_sources()
     merged = " ".join(x["text"] for x in payload["texts"])
+    schedule_context = parse_schedule_context(merged)
     actions = extract_next_floor_actions(merged)
     vote_related = [a for a in actions if any(k in a["text"].lower() for k in ["vote", "cloture", "confirmation", "adoption"])]
     LAST_FORWARD_SCHEDULE_DEBUG = {
@@ -1650,11 +1718,43 @@ def build_forward_schedule_context() -> Dict[str, Any]:
         "extracted_forward_schedule_text": merged[:5000],
         "parsed_next_floor_actions": actions,
         "parsed_forward_look_items": vote_related[:8],
+        "schedule_context": schedule_context,
+        "ignored_dates": schedule_context.get("ignored_dates", []),
+        "parsed_pro_formas": schedule_context.get("pro_forma_sessions", []),
+        "parsed_next_convening": schedule_context.get("next_convening"),
+        "parsed_vote_block": schedule_context.get("vote_block_time"),
+        "parsed_expected_votes": schedule_context.get("expected_votes", []),
     }
     return LAST_FORWARD_SCHEDULE_DEBUG
 
 
 def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[str, Any]) -> str:
+    schedule_context = context.get("schedule_context", {}) if context else {}
+    if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_forma_sessions")):
+        pro_formas = schedule_context.get("pro_forma_sessions", [])
+        convene = schedule_context.get("next_convening")
+        vote_block = schedule_context.get("vote_block_time")
+        expected_votes = schedule_context.get("expected_votes", [])
+        pro_forma_html = "".join(
+            f"<li>{html.escape(p.get('date_label', ''))} · {html.escape(p.get('time_label', ''))}</li>" for p in pro_formas
+        ) or "<li>None announced</li>"
+        votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in expected_votes[:6]) or "<li>No expected votes announced.</li>"
+        convene_label = " · ".join(x for x in [convene.get("date_label") if convene else "", convene.get("time_label") if convene else ""] if x) or "Not yet announced"
+        vote_label = " · ".join(x for x in [vote_block.get("date_label") if vote_block else "", vote_block.get("time_label") if vote_block else ""] if x) or "Not yet announced"
+        return f"""
+        <div class='card'>
+            <h3>Next Expected Floor Action</h3>
+            <div class='logistics'>
+                <div><strong>Pro forma sessions:</strong><ul>{pro_forma_html}</ul></div>
+                <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
+                <div><strong>Expected vote block:</strong> {html.escape(vote_label)}</div>
+                <div><strong>Expected votes:</strong><ol>{votes_html}</ol></div>
+                <div><strong>Legislative context:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is expected Monday evening.</div>
+                <div><strong>Coverage timing:</strong> The highest-value public coverage window is the announced vote block.</div>
+            </div>
+        </div>
+        """
+
     parsed_actions = context.get("parsed_next_floor_actions", []) if context else []
     if parsed_actions:
         first = parsed_actions[0]
@@ -1700,14 +1800,19 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 
 
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
+    schedule_context = context.get("schedule_context", {}) if context else {}
+    vote_block = schedule_context.get("vote_block_time", {}) if schedule_context else {}
+    timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block.get("time_label")] if x) or "Future floor action not yet scheduled"
     parsed = context.get("parsed_forward_look_items", []) if context else []
     if parsed:
         cards = []
         for a in parsed[:6]:
             text = a.get("text", "")
+            if any(x in text.lower() for x in ["wrap up for", "confirmed:", "agreed to:", "passed:"]):
+                continue
             action = "Cloture vote" if "cloture" in text.lower() else "Adoption vote" if "adoption" in text.lower() else "Expected floor action"
             chamber_phase = "Executive session" if "executive" in text.lower() or "nomination" in text.lower() else "Legislative business"
-            when = " · ".join(x for x in [a.get("date_label"), a.get("time_label")] if x) or "Time TBD"
+            when = timing if action in {"Cloture vote", "Adoption vote"} else (" · ".join(x for x in [a.get("date_label"), a.get("time_label")] if x) or timing)
             cards.append(f"""
             <article class='card'>
                 <h3>{html.escape(extract_measure(text) or text[:90])}</h3>
