@@ -339,13 +339,6 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     def in_window(d: Optional[date]) -> bool:
         return bool(d and today <= d <= window_end)
 
-    def normalize_time_label(raw: str, approximate: bool = False) -> str:
-        parsed = parse_time(raw or "")
-        if not parsed:
-            return clean(raw or "")
-        base = fmt_time(parsed) or clean(raw or "")
-        return f"approx. {base}" if approximate else base
-
     def shorten_nomination(v: str) -> str:
         v = clean(v)
         m = re.search(r"(Executive Calendar\s*#\d+\s+)(.+)", v, flags=re.I)
@@ -412,6 +405,8 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     expected_votes_source = ""
     vote_block_time_source = ""
     vote_block_extraction_method = ""
+    raw_vote_block_time = ""
+    normalized_vote_block_time = ""
     block_line = None
     block_votes_expected = None
     for line in re.split(r"(?:\n+|(?<=[.])\s+)", accepted):
@@ -426,12 +421,15 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
     if block_line and next_convening:
         time_match = re.search(r"(?:at\s+)?(approximately\s+)?(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", block_line, flags=re.I)
-        raw_time = time_match.group(2) if time_match else ""
+        raw_time = time_match.group(0) if time_match else ""
+        raw_vote_block_time = clean(raw_time)
+        normalized_vote_block_time = normalize_public_time_label(raw_vote_block_time)
         vote_block = {
             "date": next_convening["date"],
-            "time": normalize_time_label(raw_time, approximate=False),
+            "raw_time_text": raw_vote_block_time,
+            "time": normalized_vote_block_time,
             "date_label": next_convening["date_label"],
-            "time_label": normalize_time_label(raw_time, approximate=True),
+            "time_label": normalized_vote_block_time,
             "roll_call_votes_expected": block_votes_expected,
         }
         vote_block_time_source = clean(time_match.group(0)) if time_match else ""
@@ -443,13 +441,15 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             flags=re.I,
         )
         if fallback_match:
-            raw_time = fallback_match.group(2)
-            approx = bool(re.search(r"approximately", fallback_match.group(1), flags=re.I))
+            raw_time = fallback_match.group(1)
+            raw_vote_block_time = clean(raw_time)
+            normalized_vote_block_time = normalize_public_time_label(raw_vote_block_time)
             vote_block = {
                 "date": next_convening["date"],
-                "time": normalize_time_label(raw_time, approximate=False),
+                "raw_time_text": raw_vote_block_time,
+                "time": normalized_vote_block_time,
                 "date_label": next_convening["date_label"],
-                "time_label": normalize_time_label(raw_time, approximate=approx),
+                "time_label": normalized_vote_block_time,
             }
             vote_block_time_source = clean(fallback_match.group(1))
             vote_block_extraction_method = "prose_fallback"
@@ -511,6 +511,9 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "expected_votes": expected_votes[:8],
         "next_convening_date": next_convening.get("date", ""),
         "vote_block_time_source": vote_block_time_source,
+        "raw_vote_block_time": raw_vote_block_time,
+        "normalized_vote_block_time": normalized_vote_block_time,
+        "vote_block_display_time": vote_block.get("time_label", ""),
         "vote_block_extraction_method": vote_block_extraction_method,
         "expected_votes_source": expected_votes_source,
         "cloture_filed": list(dict.fromkeys(cloture_filed))[:8],
@@ -537,6 +540,8 @@ Wrap Up for April 30, 2026."""
     return {
         "next_convening_date_is_may_11_2026": parsed.get("next_convening", {}).get("date") == "2026-05-11",
         "vote_block_time_is_530pm": "5:30" in (parsed.get("vote_block", {}).get("time_label", "") or ""),
+        "vote_block_time_is_normalized_approx_label": parsed.get("normalized_vote_block_time") == "approx. 5:30 p.m.",
+        "vote_block_time_is_not_1130": "11:30" not in (parsed.get("vote_block", {}).get("time_label", "") or ""),
         "ignored_dates_includes_feb_1_2026": any("February 1, 2026" in x for x in parsed.get("ignored_dates", [])),
         "wrap_up_not_in_expected_votes": not any("wrap up for" in x.lower() for x in parsed.get("expected_votes", [])),
     }
@@ -595,6 +600,23 @@ def parse_time(line: str) -> Optional[time]:
         return time(hour, minute)
     except ValueError:
         return None
+
+
+def normalize_public_time_label(raw: str) -> str:
+    text = clean(raw or "")
+    if not text:
+        return ""
+
+    approx = bool(re.search(r"\b(?:at\s+)?approx(?:\.|imately)?\b", text, flags=re.I))
+    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?\b", text, flags=re.I)
+    if not m:
+        return "approx. " + text if approx and not text.lower().startswith("approx.") else text
+
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    meridiem = "a.m." if m.group(3).lower() == "a" else "p.m."
+    normalized = f"{hour}:{minute:02d} {meridiem}"
+    return f"approx. {normalized}" if approx else normalized
 
 
 def fmt_date(d: Optional[date]) -> Optional[str]:
@@ -1917,6 +1939,10 @@ def build_forward_schedule_context() -> Dict[str, Any]:
         "parsed_pro_formas": schedule_context.get("pro_formas", []),
         "parsed_next_convening": schedule_context.get("next_convening"),
         "parsed_vote_block": schedule_context.get("vote_block"),
+        "raw_vote_block_time": schedule_context.get("raw_vote_block_time", ""),
+        "normalized_vote_block_time": schedule_context.get("normalized_vote_block_time", ""),
+        "vote_block_display_time": schedule_context.get("vote_block_display_time", ""),
+        "vote_block_extraction_method": schedule_context.get("vote_block_extraction_method", ""),
         "parsed_expected_votes": schedule_context.get("expected_votes", []),
     }
     return LAST_FORWARD_SCHEDULE_DEBUG
