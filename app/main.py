@@ -113,7 +113,7 @@ class JoltItem:
 SOURCE_STATUS = {
     "congressional_reporters": "not loaded",
     "ebb": "not loaded",
-    "congress_api": "disabled: missing CONGRESS_API_KEY" if not CONGRESS_API_KEY else "loaded",
+    "congress_api": "Congress.gov API disabled: missing CONGRESS_API_KEY" if not CONGRESS_API_KEY else "Congress.gov API loaded",
     "committee_schedule": "linked",
     "congressional_record": "linked/API available",
 }
@@ -636,20 +636,6 @@ def extract_topic(text: str) -> Optional[str]:
 
 
 
-def parse_measure_for_congress_api(measure: str, default_congress: int = 119) -> Optional[Dict[str, str]]:
-    if not measure:
-        return None
-    m = re.search(r"\b(S\.|S\.Res\.|S\.J\.Res\.|H\.R\.|H\.J\.Res\.)\s*(\d+)\b", measure, re.I)
-    if not m:
-        return None
-    kind = m.group(1).lower().replace(" ", "")
-    mapping = {"s.": "s", "s.res.": "sres", "s.j.res.": "sjres", "h.r.": "hr", "h.j.res.": "hjres"}
-    bill_type = mapping.get(kind)
-    if not bill_type:
-        return None
-    return {"congress": str(default_congress), "billType": bill_type, "billNumber": m.group(2)}
-
-
 def coverage_value_for_item(item: JoltItem) -> str:
     text = f"{item.title} {item.raw}".lower()
     if any(k in text for k in ["vote underway", "roll call", "cloture", "stakeout", "press conference", "media availability"]) or any(s in LEADERSHIP_NAMES for s in item.senators_detected):
@@ -669,18 +655,23 @@ def current_congress() -> int:
 def parse_measure_for_congress_api(measure: Optional[str]) -> Optional[Tuple[int, str, str]]:
     if not measure:
         return None
-    text = clean(measure).replace(" ", "").lower()
+    text = clean(measure).lower()
+    compact = re.sub(r"\s+", "", text)
+    compact = compact.replace("..", ".")
     patterns = {
         r"^s\.(\d+)$": "s",
-        r"^s\.res\.(\d+)$": "sres",
-        r"^s\.j\.res\.(\d+)$": "sjres",
-        r"^h\.r\.(\d+)$": "hr",
-        r"^h\.j\.res\.(\d+)$": "hjres",
+        r"^s\.?res\.(\d+)$": "sres",
+        r"^s\.?j\.?res\.(\d+)$": "sjres",
+        r"^h\.?r\.(\d+)$": "hr",
+        r"^h\.?j\.?res\.(\d+)$": "hjres",
+        r"^h\.?res\.(\d+)$": "hres",
+        r"^h\.?con\.?res\.(\d+)$": "hconres",
+        r"^s\.?con\.?res\.(\d+)$": "sconres",
     }
     for pattern, bill_type in patterns.items():
-        m = re.match(pattern, text)
+        m = re.match(pattern, compact)
         if m:
-            return current_congress(), bill_type, m.group(1)
+            return current_congress() or 119, bill_type, m.group(1)
     return None
 
 
@@ -692,6 +683,16 @@ def congress_api_get(path: str) -> Dict[str, Any]:
     r = requests.get(url, params={"api_key": CONGRESS_API_KEY, "format": "json"}, timeout=10)
     r.raise_for_status()
     return r.json()
+
+def strip_html_text(text: str) -> str:
+    return clean(BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True))
+
+
+def fetch_official_context_for_item(item: JoltItem) -> Dict[str, Optional[str]]:
+    out: Dict[str, Optional[str]] = {}
+    if item.measure:
+        out.update(fetch_congress_bill_info(item.measure))
+    return out
 
 
 def fetch_congress_bill_info(measure: Optional[str]) -> Dict[str, Optional[str]]:
@@ -710,17 +711,18 @@ def fetch_congress_bill_info(measure: Optional[str]) -> Dict[str, Optional[str]]
         sponsors = ", ".join([s.get("fullName", "") for s in bill.get("sponsors", [])[:3] if s.get("fullName")])
         latest_action = (actions[0].get("text") if actions else None) or latest.get("text")
         summary = (summaries[0].get("text") if summaries else None) or ""
-        summary = clean(summary)[:300] if summary else None
+        summary = strip_html_text(summary)[:300] if summary else None
         return {
             "congress_bill_title": bill.get("title"),
             "congress_latest_action": latest_action,
+            "congress_official_context": (latest.get("actionDate") or latest.get("date")),
             "congress_policy_area": (bill.get("policyArea") or {}).get("name"),
             "congress_sponsors": sponsors or None,
             "congress_url": bill.get("url") or search_url,
             "congress_summary": summary,
         }
     except Exception:
-        SOURCE_STATUS["congress_api"] = "error"
+        SOURCE_STATUS["congress_api"] = "Congress.gov API error"
         return {"congress_url": search_url}
 
 
@@ -798,7 +800,7 @@ def parse_floor_item(raw: str, fallback_date: Optional[date]) -> JoltItem:
         topic=topic,
     )
     item.coverage_target = classify_coverage_target(item)
-    item.__dict__.update(fetch_congress_bill_info(item.measure))
+    item.__dict__.update(fetch_official_context_for_item(item))
 
     return apply_past_status(item)
 
@@ -1099,7 +1101,7 @@ def fetch_x_items() -> List[JoltItem]:
 
 def fetch_committee_meetings_items() -> List[JoltItem]:
     if not CONGRESS_API_KEY:
-        SOURCE_STATUS["congress_api"] = "disabled: missing CONGRESS_API_KEY"
+        SOURCE_STATUS["congress_api"] = "Congress.gov API disabled: missing CONGRESS_API_KEY"
         return []
     congress = current_congress() or 119
     try:
@@ -1149,7 +1151,7 @@ def fetch_committee_meetings_items() -> List[JoltItem]:
             ))
         return out
     except Exception:
-        SOURCE_STATUS["congress_api"] = "error"
+        SOURCE_STATUS["congress_api"] = "Congress.gov API error"
         return []
 
 
@@ -1232,6 +1234,11 @@ def filter_items(items: List[JoltItem], q: Optional[str], view: str, show_earlie
         or (x.topic and q in x.topic.lower())
         or (x.committee and q in x.committee.lower())
         or (x.coverage_target and q in x.coverage_target.lower())
+        or (x.congress_bill_title and q in x.congress_bill_title.lower())
+        or (x.congress_latest_action and q in x.congress_latest_action.lower())
+        or (x.congress_summary and q in x.congress_summary.lower())
+        or (x.congress_sponsors and q in x.congress_sponsors.lower())
+        or (x.congress_policy_area and q in x.congress_policy_area.lower())
         or (x.press_availability and q in x.press_availability.lower())
         or any(q in s.lower() for s in x.senators_detected)
         or any(q in SENATOR_MAP[s]["party_state"].lower() for s in x.senators_detected if s in SENATOR_MAP)
@@ -1448,9 +1455,10 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         <div class="logistics">
             <div><strong>Official context</strong></div>
             {f"<div><strong>Official title:</strong> {html.escape(item.congress_bill_title)}</div>" if item.congress_bill_title else ""}
-            {f"<div><strong>Latest action:</strong> {html.escape(item.congress_latest_action)}</div>" if item.congress_latest_action else ""}
+            {f"<div><strong>Latest official action:</strong> {html.escape(item.congress_latest_action)}</div>" if item.congress_latest_action else ""}
             {f"<div><strong>Congress.gov summary:</strong> {html.escape(item.congress_summary)}</div>" if item.congress_summary else ""}
             {f"<div><strong>Sponsor:</strong> {html.escape(item.congress_sponsors)}</div>" if item.congress_sponsors else ""}
+            {f"<div><strong>Policy area:</strong> {html.escape(item.congress_policy_area)}</div>" if item.congress_policy_area else ""}
             {f"<div><a class='source' href='{html.escape(item.congress_url)}' target='_blank'>Official Congress.gov link</a></div>" if item.congress_url else ""}
         </div>
         """
@@ -1477,7 +1485,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             {coverage_line}
             {press_line}{cov_line}
         </div>
-        {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>Measure Link</a>" if item.measure else ""}
+        {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>View on Congress.gov</a>" if item.measure else ""}
         {official_context}
         {f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>" if item.committee else ""}
         {f"<a class='source' href='{EBB_URL}' target='_blank'>Open EBB</a>" if item.source == 'EBB' else ""}
