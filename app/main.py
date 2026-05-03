@@ -117,7 +117,7 @@ def parse_date(line: str) -> Optional[date]:
 
 def parse_time(line: str) -> Optional[time]:
     m = re.search(
-        r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.m\.|p\.m\.|AM|PM|am|pm)\b",
+        r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)\b",
         line,
         re.I,
     )
@@ -592,22 +592,27 @@ def infer_ebb_title(text: str) -> str:
     return "Senate Event"
 
 
+def extract_ebb_room(text: str) -> Optional[str]:
+    m = re.search(r"\b(?:SD|SH|SR|S)-?\s?\d{1,4}[A-Z]?\b", text, flags=re.I)
+    if not m:
+        return None
+    return normalize_room(m.group(0))
+
+
 def infer_ebb_committee(text: str) -> Optional[str]:
-    committees = [
-        "Appropriations", "Armed Services", "Banking", "Budget", "Commerce",
-        "Energy and Natural Resources", "Environment and Public Works",
-        "Finance", "Foreign Relations", "Health, Education, Labor, and Pensions",
-        "HELP", "Homeland Security", "Judiciary", "Rules", "Small Business",
-        "Veterans' Affairs", "Agriculture", "Intelligence", "Aging",
+    patterns = [
+        r"\bSenate\s+Committee\s+on\s+([A-Za-z0-9 ,.&'/-]+?)(?:\s+(?:will|to|for|at)\b|$)",
+        r"\bCommittee\s+on\s+([A-Za-z0-9 ,.&'/-]+?)(?:\s+(?:will|to|for|at)\b|$)",
+        r"\bCommittee\s+of\s+([A-Za-z0-9 ,.&'/-]+?)(?:\s+(?:will|to|for|at)\b|$)",
     ]
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            return f"Committee on {clean(m.group(1))[:90]}"
 
-    for committee in committees:
-        if re.search(re.escape(committee), text, flags=re.I):
-            return committee
-
-    m = re.search(r"Committee on ([A-Za-z ,&'-]+)", text, flags=re.I)
+    m = re.search(r"\b(Appropriations|Armed Services|Banking(?:, Housing, and Urban Affairs)?|Budget|Commerce(?:, Science, and Transportation)?|Energy and Natural Resources|Environment and Public Works|Finance|Foreign Relations|Health, Education, Labor, and Pensions|HELP|Homeland Security(?: and Governmental Affairs)?|Judiciary|Rules(?: and Administration)?|Small Business(?: and Entrepreneurship)?|Veterans'? Affairs|Agriculture(?:, Nutrition, and Forestry)?|Intelligence|Aging)\b", text, flags=re.I)
     if m:
-        return "Committee on " + clean(m.group(1))[:80]
+        return clean(m.group(1))
 
     return None
 
@@ -625,7 +630,7 @@ def split_ebb_events(text: str) -> List[str]:
     )
 
     text = re.sub(
-        r"(?=(?:Stakeout|Press Conference|Media Availability|Briefing|Hearing|Business Meeting|Markup|Photo Spray|Camera Spray)\b)",
+        r"(?=\b(?:stakeout|press conference|media availability|briefing|hearing|business meeting|markup|photo spray|camera spray)\b)",
         "\n",
         text,
         flags=re.I,
@@ -664,15 +669,19 @@ def split_ebb_events(text: str) -> List[str]:
 
 def classify_ebb(raw: str) -> Dict[str, str]:
     title = infer_ebb_title(raw)
-    location = infer_location(raw)
+    location = extract_ebb_room(raw) or infer_location(raw)
     building = infer_building(location)
     committee = infer_ebb_committee(raw)
     lower = raw.lower()
+    parsed_time = parse_time(raw)
 
-    if location:
+    if parsed_time and location:
         confidence = "high"
-        quality = "structured time/location parsed" if parse_time(raw) else "structured location parsed"
-    elif parse_time(raw):
+        quality = "structured time and location parsed"
+    elif location:
+        confidence = "high"
+        quality = "structured location parsed"
+    elif parsed_time:
         confidence = "medium"
         quality = "time parsed; location missing"
     else:
@@ -682,7 +691,7 @@ def classify_ebb(raw: str) -> Dict[str, str]:
     urgency = "scheduled"
 
     if any(x in lower for x in ["stakeout", "press conference", "media availability", "camera spray", "photo spray"]):
-        urgency = "move now" if parse_time(raw) else "watch"
+        urgency = "move now" if parsed_time else "watch"
 
     if location:
         where = location
