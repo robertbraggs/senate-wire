@@ -1533,6 +1533,95 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
 
 
 
+
+
+def _fmt_item_datetime(item: JoltItem) -> str:
+    parts = [x for x in [item.date_label, item.time_label] if x]
+    return " · ".join(parts) if parts else "Time TBD"
+
+
+def build_next_expected_floor_action(items: List[JoltItem]) -> Optional[JoltItem]:
+    candidates = []
+    for item in items:
+        if item.status == "historical":
+            continue
+        source = (item.source or "").lower()
+        if item.category not in {"Schedule", "Votes", "Floor Action"}:
+            continue
+        if not any(x in source for x in ["congressional", "senate", "radio", "congress.gov"]):
+            continue
+        candidates.append(item)
+
+    if not candidates:
+        return None
+
+    dated = [x for x in candidates if x.sort_datetime]
+    if dated:
+        return sorted(dated, key=lambda x: x.sort_datetime)[0]
+    return sorted(candidates, key=lambda x: x.signal_score, reverse=True)[0]
+
+
+def render_next_expected_floor_action(item: Optional[JoltItem]) -> str:
+    if not item:
+        return "<p class='empty'>No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.</p>"
+
+    source_link = item.url or CONGRESSIONAL_REPORTERS_URL
+    vote_status = item.vote_status or ("underway" if "now voting" in f"{item.title} {item.raw}".lower() else "expected" if item.time_label else "scheduled")
+    chamber_phase = item.chamber_phase or ("executive session" if "executive session" in f"{item.title} {item.raw}".lower() else "legislative business")
+    return f"""
+    <div class='card'>
+        <h3>{html.escape(_fmt_item_datetime(item))}</h3>
+        <p><strong>{html.escape(item.title)}</strong></p>
+        <div class='logistics'>
+            <div><strong>Floor action type:</strong> {html.escape(item.category)}</div>
+            <div><strong>Chamber phase:</strong> {html.escape(chamber_phase)}</div>
+            <div><strong>Vote status:</strong> {html.escape(vote_status)}</div>
+            <div><strong>Legislative context:</strong> {html.escape(item.legislative_context or 'Public schedule source indicates upcoming floor business.')}</div>
+            <div><strong>Coverage timing:</strong> {html.escape(item.coverage_note or item.action_line or 'Coverage begins around the announced floor timing.')}</div>
+            <div><strong>Public value:</strong> {html.escape(item.public_value or item.takeaway)}</div>
+        </div>
+        <a class='source' href='{html.escape(source_link)}' target='_blank'>Public schedule source</a>
+    </div>
+    """
+
+
+def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem]) -> str:
+    include_tokens = ["cloture", "motion to proceed", "confirmation", "nomination", "passage", "roll call", "executive", "s.", "h.r.", "resolution"]
+    out = []
+    featured_key = (featured.title, featured.sort_datetime, featured.measure) if featured else None
+    for item in items:
+        if item.status == "historical":
+            continue
+        raw = f"{item.title} {item.raw}".lower()
+        if not any(tok in raw for tok in include_tokens) and item.category not in {"Votes", "Schedule", "Floor Action"}:
+            continue
+        key = (item.title, item.sort_datetime, item.measure)
+        if featured_key and key == featured_key:
+            continue
+        out.append(item)
+
+    if not out:
+        return "<p class='empty'>No upcoming legislation or nomination signals found in public sources.</p>"
+
+    cards = []
+    for item in sorted(out, key=lambda x: (x.sort_datetime is None, x.sort_datetime or '9999'))[:6]:
+        measure = item.measure or item.title
+        cards.append(f"""
+        <article class='card'>
+            <h3>{html.escape(measure)}</h3>
+            <div class='logistics'>
+                <div><strong>Expected action:</strong> {html.escape(item.title)}</div>
+                <div><strong>Timing window:</strong> {html.escape(_fmt_item_datetime(item))}</div>
+                <div><strong>Procedural stage:</strong> {html.escape(item.procedure_stage or item.category)}</div>
+                <div><strong>Legislative context:</strong> {html.escape(item.legislative_context or item.takeaway)}</div>
+                <div><strong>Public value:</strong> {html.escape(item.public_value or item.takeaway)}</div>
+                {f"<div><strong>Official context:</strong> {html.escape(item.congress_official_context)}</div>" if item.congress_official_context else ""}
+            </div>
+            <a class='source' href='{html.escape(item.url or CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
+        </article>
+        """)
+    return "".join(cards)
+
 def top_actions(items: List[JoltItem]) -> List[str]:
     ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
     verbs = ["Monitor", "Track", "Watch", "Confirm"]
@@ -1709,7 +1798,8 @@ def empty_message(title: str) -> str:
         "Committee Meetings & Hearings": "No committee hearings or meetings currently scheduled.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural context updates are active at this time.",
-        "Next Expected Floor Action": "No vote or floor action expected at this time.",
+        "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
+        "Forward Look: Legislation & Nominations": "No upcoming legislation or nomination signals found in public sources.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
@@ -2138,13 +2228,16 @@ def dashboard(
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
                 </div>
 
+                <section class="section"><h2>Next Expected Floor Action</h2>{render_next_expected_floor_action(build_next_expected_floor_action(items))}</section>
+
                 <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items)) if top_actions(main_items) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
                                 {section("Senate Floor Activity", groups.get("Schedule", []), view)}
                 {section("Key Votes", groups.get("Votes", []), view)}
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
+                <section class="section"><h2>Active Signals summary</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
-                <section class="section"><h2>Next Expected Floor Action</h2>{f"<div class='card'><p>{html.escape(next_items[0].takeaway or next_items[0].title)}</p></div>" if next_items else "<p class='empty'>No vote or floor action expected at this time.</p>"}</section>
+                                <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items))}</section>
                 {section("Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
                 {section("Procedural Context", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
