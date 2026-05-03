@@ -1528,8 +1528,28 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
 
 
 def top_actions(items: List[JoltItem]) -> List[str]:
-    ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)[:3]
-    actions = [clean((it.action_line or it.movement_cue).split(".")[0]) for it in ranked if (it.action_line or it.movement_cue)]
+    ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
+    verbs = ["Monitor", "Track", "Watch", "Confirm"]
+    actions = []
+
+    for idx, item in enumerate(ranked[:4]):
+        base = clean((item.action_line or item.movement_cue or item.takeaway).split(".")[0])
+        verb = verbs[idx % len(verbs)]
+        if base:
+            actions.append(f"{verb}: {base[0].lower() + base[1:] if len(base) > 1 else base.lower()}")
+
+    while len(actions) < 2:
+        fallback = [
+            "Monitor: floor schedule updates and leadership cues.",
+            "Track: committee calendars and hearing starts.",
+            "Watch: EBB postings for new stakeouts or events.",
+            "Confirm: vote timing and room-level guidance before moving.",
+        ]
+        actions.append(fallback[len(actions)])
+
+    if len(actions) < 3:
+        actions.append("Confirm: expected timing with official Senate and committee sources.")
+
     return actions[:3]
 def should_show_in_main(item: JoltItem) -> bool:
     return item.signal_score >= 25 and any([item.time_label, item.location, item.senators_detected, item.topic, item.measure, item.action_line])
@@ -1719,12 +1739,13 @@ def empty_message(title: str) -> str:
         "Key Votes": "No votes scheduled or underway.",
         "News Events & Stakeouts": "No media events currently scheduled. Check EBB for updates.",
         "Committee Meetings & Hearings": "No committee hearings or meetings currently scheduled.",
-        "Key Floor Remarks": "No key floor remarks detected.",
-        "Legislative Context": "No legislative context items detected.",
+        "Floor Remarks": "No floor remarks are driving coverage right now.",
+        "Procedural Context": "No procedural context updates are active at this time.",
+        "Next Expected Floor Action": "No vote or floor action expected at this time.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
-    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No items detected.'))}</p>"
+    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No new developments to post yet.'))}</p>"
 
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
@@ -2082,8 +2103,8 @@ def dashboard(
                     margin-top: 24px;
                 }}
                 .links a {{
-                    display: inline-block;
-                    margin: 6px 8px 6px 0;
+                    display: block;
+                    margin: 8px 0;
                     color: #1d4ed8;
                     font-weight: bold;
                     background: #eef2ff;
@@ -2140,11 +2161,11 @@ def dashboard(
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
                 <div class="outlook">
-                    <strong>Today’s Coverage Outlook:</strong> {html.escape(outlook)}
+                    <h2>TODAY’S COVERAGE OUTLOOK</h2><p>{html.escape(outlook)}</p>
                 </div>
 
                 <div class="summary">
-                    <div class="stat"><b>{len(items)}</b>Active Signals</div>
+                    <div class="stat"><b>{len([x for x in signals if x.total_score > 40]) if len([x for x in signals if x.total_score > 40]) >= 2 else "—"}</b>Active Signals</div>
                     <div class="stat"><b>{len(groups.get("Votes", []))}</b>Votes</div>
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
                 </div>
@@ -2155,8 +2176,9 @@ def dashboard(
                 {section("Key Votes", groups.get("Votes", []), view)}
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
-                {section("Key Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
-                {section("Legislative Context", all_groups.get("Notes", []), view, collapsed=True)}
+                <section class="section"><h2>Next Expected Floor Action</h2>{f"<div class='card'><p>{html.escape(next_items[0].takeaway or next_items[0].title)}</p></div>" if next_items else "<p class='empty'>No vote or floor action expected at this time.</p>"}</section>
+                {section("Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
+                {section("Procedural Context", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
                 {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
