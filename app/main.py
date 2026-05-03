@@ -288,70 +288,121 @@ def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
     return sorted(unique, key=lambda x: (x["sort_datetime"] == "", x["sort_datetime"] or "9999"))[:20]
 
 
-def parse_schedule_context(text: str) -> Dict[str, Any]:
-    cleaned = clean(text)
-    lower = cleaned.lower()
-    today = date.today()
-    ignored_dates = []
+def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
+    cleaned = clean(text or "")
+    blocks = [clean(b) for b in re.split(r"\n{2,}", text or "") if clean(b)]
+    rejected_blocks: List[str] = []
+    ignored_dates: List[str] = []
 
-    ignore_patterns = [
-        r"for a term of [^.]*? from ([A-Z][a-z]+ \d{1,2}, \d{4})",
-        r"term expiring[^.]*?([A-Z][a-z]+ \d{1,2}, \d{4})",
-        r"\bvice\b[^.]*",
-        r"\bfrom ([A-Z][a-z]+ \d{1,2}, \d{4})",
-    ]
-    for pat in ignore_patterns:
-        for m in re.finditer(pat, cleaned, flags=re.I):
-            ignored_dates.append(clean(m.group(0)))
+    def has_future_phrase(t: str) -> bool:
+        l = t.lower()
+        return any(x in l for x in ["will next convene", "next convene at", "the senate will vote", "roll call votes expected", "at approximately"])
+
+    def parse_schedule_date(snippet: str) -> Optional[date]:
+        parsed = parse_date(snippet)
+        if parsed:
+            return parsed
+        m = re.search(r"([A-Z][a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?", snippet)
+        if not m:
+            return None
+        try:
+            guessed = datetime.strptime(f"{m.group(1)} {m.group(2)} {today.year}", "%B %d %Y").date()
+            if guessed < today:
+                guessed = guessed.replace(year=today.year + 1)
+            return guessed
+        except ValueError:
+            return None
+
+    accepted_parts: List[str] = []
+    for block in blocks or [cleaned]:
+        l = block.lower()
+        if "wrap up for" in l and not has_future_phrase(block):
+            rejected_blocks.append(block[:300])
+            continue
+        accepted_parts.append(block)
+    accepted = " ".join(accepted_parts) if accepted_parts else cleaned
+
+    ignore_phrases = ["for a term of", "term of", "term expiring", "from february 1, 2026", " vice ", "effective", "confirmed:", "agreed to:"]
+    for sentence in re.split(r"(?<=[.])\s+", accepted):
+        ls = sentence.lower()
+        if any(p in ls for p in ignore_phrases):
+            for m in re.finditer(r"([A-Z][a-z]+\s+\d{1,2},\s*\d{4})", sentence):
+                ignored_dates.append(clean(m.group(1)))
 
     pro_formas = []
-    for m in re.finditer(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+([A-Z][a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\s+at\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", cleaned, flags=re.I):
+    for m in re.finditer(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+([A-Z][a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*(\d{4}))?\s+at\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", accepted, flags=re.I):
         snippet = clean(m.group(0))
-        d = parse_date(snippet)
-        if not d:
+        span_start = max(0, m.start()-120)
+        span_end = min(len(accepted), m.end()+120)
+        context_window = accepted[span_start:span_end].lower()
+        if "pro forma" not in context_window:
             continue
-        if not re.search(r"pro forma", lower):
-            continue
-        if d < today:
-            continue
+        d = parse_schedule_date(snippet)
         t = parse_time(snippet)
-        pro_formas.append({"text": snippet, "date_label": fmt_date(d), "time_label": fmt_time(t), "sort_datetime": sort_dt(d, t)})
+        if not d or d < today:
+            continue
+        pro_formas.append({"text": snippet, "date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t)})
 
-    next_convening = None
-    m = re.search(r"next convene at\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))\s+on\s+([^.]+?)(?:\.|At approximately|Following|Then)", cleaned, flags=re.I)
+    next_convening = {}
+    m = re.search(r"(?:will next convene|next convene at)\s+at?\s*(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).*?on\s+((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)", accepted, flags=re.I)
     if m:
         snippet = clean(m.group(0))
-        d = parse_date(snippet)
-        t = parse_time(snippet)
+        d = parse_schedule_date(m.group(2))
+        t = parse_time(m.group(1))
         if d and d >= today:
-            next_convening = {"text": snippet, "date_label": fmt_date(d), "time_label": fmt_time(t), "sort_datetime": sort_dt(d, t)}
+            next_convening = {"text": snippet, "date": d.isoformat(), "time": fmt_time(t) or "", "date_label": fmt_date(d), "time_label": fmt_time(t) or "", "sort_datetime": sort_dt(d, t), "date_obj": d}
 
-    vote_block = None
-    m = re.search(r"At approximately\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))", cleaned, flags=re.I)
+    vote_block = {}
+    m = re.search(r"At approximately\s+(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)).{0,120}?will vote", accepted, flags=re.I)
     if m:
-        t = parse_time(m.group(0))
-        d = parse_date(cleaned) or (datetime.fromisoformat(next_convening["sort_datetime"]).date() if next_convening and next_convening.get("sort_datetime") else None)
-        vote_block = {"text": clean(m.group(0)), "date_label": fmt_date(d) if d else "", "time_label": f"approx. {fmt_time(t)}" if t else "", "sort_datetime": sort_dt(d, t) if d and t else ""}
+        t = parse_time(m.group(1))
+        d = next_convening.get("date_obj") if next_convening else None
+        vote_block = {"text": clean(m.group(0)), "date": d.isoformat() if d else "", "time": fmt_time(t) if t else "", "date_label": fmt_date(d) if d else "", "time_label": f"approx. {fmt_time(t)}" if t else "", "sort_datetime": sort_dt(d, t) if d and t else ""}
 
     expected_votes = []
-    for sent in re.split(r"(?<=[.])\s+", cleaned):
+    cloture_filed = []
+    for sent in re.split(r"(?<=[.])\s+", accepted):
         s = clean(sent)
         ls = s.lower()
-        if any(x in ls for x in ["wrap up for", "confirmed:", "agreed to:", "passed:"]):
+        if any(x in ls for x in ["wrap up for", "for a term of", "term expiring", "confirmed:", "agreed to:"]):
             continue
-        if any(x in ls for x in ["vote on adoption", "motion to invoke cloture", "cloture on"]):
-            expected_votes.append(s)
+        if "will vote on" in ls:
+            expected_votes.append(s.split("will vote on",1)[1].strip().rstrip("."))
+        if "motion to invoke cloture" in ls:
+            expected_votes.append(s.rstrip("."))
+        if "filed cloture" in ls or "cloture filed" in ls:
+            cloture_filed.append(s.rstrip("."))
 
-    cloture_filed_list = [s for s in expected_votes if "cloture" in s.lower()]
     return {
-        "pro_forma_sessions": pro_formas[:6],
-        "next_convening": next_convening,
-        "leader_remarks": "Following Leader remarks" if "following leader remarks" in lower else "",
-        "morning_business": "period of morning business" if "morning business" in lower else "",
-        "vote_block_time": vote_block,
+        "pro_formas": pro_formas[:6],
+        "next_convening": {k:v for k,v in next_convening.items() if k!="date_obj"},
+        "vote_block": vote_block,
         "expected_votes": expected_votes[:8],
-        "cloture_filed_list": cloture_filed_list[:8],
-        "ignored_dates": ignored_dates[:20],
+        "cloture_filed": cloture_filed[:8],
+        "source_label": "Public schedule source",
+        "source_url": CONGRESSIONAL_REPORTERS_URL,
+        "ignored_dates": sorted(set(ignored_dates)),
+        "rejected_blocks": rejected_blocks[:20],
+    }
+
+
+def forward_schedule_parser_smoke_test() -> Dict[str, Any]:
+    """Unit-style parser fixture for deterministic forward floor schedule extraction."""
+    sample_text = """Other than pro formas on Monday, May 4 at 6:45 a.m. and Thursday, May 7 at 10:00 a.m. the Senate will next convene at 3:00 p.m. on Monday, May 11th with two votes that evening at 5:30 p.m.
+The Senate stands adjourned for pro forma sessions only...
+Monday, May 4th at 6:45am
+Thursday, May 7th at 10:00am
+When the Senate adjourns on Thursday, it will next convene at 3:00pm on Monday, May 11, 2026.
+At approximately 5:30pm, the Senate will vote on adoption of Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
+Following disposition... vote on the motion to invoke cloture on Executive Calendar #728 Kevin Warsh...
+for a term of fourteen years from February 1, 2026.
+Wrap Up for April 30, 2026."""
+    parsed = parse_forward_floor_schedule(sample_text, date(2026, 5, 3))
+    return {
+        "next_convening_date_is_may_11_2026": parsed.get("next_convening", {}).get("date") == "2026-05-11",
+        "vote_block_time_is_530pm": "5:30" in (parsed.get("vote_block", {}).get("time_label", "") or ""),
+        "ignored_dates_includes_feb_1_2026": any("February 1, 2026" in x for x in parsed.get("ignored_dates", [])),
+        "wrap_up_not_in_expected_votes": not any("wrap up for" in x.lower() for x in parsed.get("expected_votes", [])),
     }
 
 
@@ -1709,20 +1760,20 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     global LAST_FORWARD_SCHEDULE_DEBUG
     payload = fetch_forward_schedule_sources()
     merged = " ".join(x["text"] for x in payload["texts"])
-    schedule_context = parse_schedule_context(merged)
+    schedule_context = parse_forward_floor_schedule(merged, date.today())
     actions = extract_next_floor_actions(merged)
     vote_related = [a for a in actions if any(k in a["text"].lower() for k in ["vote", "cloture", "confirmation", "adoption"])]
     LAST_FORWARD_SCHEDULE_DEBUG = {
         "loaded_sources": payload["loaded_sources"],
         "errors": payload["errors"],
-        "extracted_forward_schedule_text": merged[:5000],
-        "parsed_next_floor_actions": actions,
-        "parsed_forward_look_items": vote_related[:8],
+        "forward_schedule_source_text": merged[:5000],
         "schedule_context": schedule_context,
+        "parsed_forward_schedule": schedule_context,
         "ignored_dates": schedule_context.get("ignored_dates", []),
-        "parsed_pro_formas": schedule_context.get("pro_forma_sessions", []),
+        "rejected_blocks": schedule_context.get("rejected_blocks", []),
+        "parsed_pro_formas": schedule_context.get("pro_formas", []),
         "parsed_next_convening": schedule_context.get("next_convening"),
-        "parsed_vote_block": schedule_context.get("vote_block_time"),
+        "parsed_vote_block": schedule_context.get("vote_block"),
         "parsed_expected_votes": schedule_context.get("expected_votes", []),
     }
     return LAST_FORWARD_SCHEDULE_DEBUG
@@ -1730,10 +1781,10 @@ def build_forward_schedule_context() -> Dict[str, Any]:
 
 def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
-    if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_forma_sessions")):
-        pro_formas = schedule_context.get("pro_forma_sessions", [])
+    if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_formas")):
+        pro_formas = schedule_context.get("pro_formas", [])
         convene = schedule_context.get("next_convening")
-        vote_block = schedule_context.get("vote_block_time")
+        vote_block = schedule_context.get("vote_block")
         expected_votes = schedule_context.get("expected_votes", [])
         pro_forma_html = "".join(
             f"<li>{html.escape(p.get('date_label', ''))} · {html.escape(p.get('time_label', ''))}</li>" for p in pro_formas
@@ -1801,9 +1852,9 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
-    vote_block = schedule_context.get("vote_block_time", {}) if schedule_context else {}
+    vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
     timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block.get("time_label")] if x) or "Future floor action not yet scheduled"
-    parsed = context.get("parsed_forward_look_items", []) if context else []
+    parsed = []
     if parsed:
         cards = []
         for a in parsed[:6]:
@@ -2547,6 +2598,11 @@ def debug_raw():
         "floor_raw": split_floor_events(floor_text),
         "ebb_items": [asdict(x) for x in ebb_items],
         "forward_schedule_diagnostics": forward_context,
+        "forward_schedule_source_text": forward_context.get("forward_schedule_source_text", ""),
+        "parsed_forward_schedule": forward_context.get("parsed_forward_schedule", {}),
+        "ignored_dates": forward_context.get("ignored_dates", []),
+        "rejected_blocks": forward_context.get("rejected_blocks", []),
+        "forward_schedule_parser_smoke_test": forward_schedule_parser_smoke_test(),
         "items": [asdict(x) for x in get_all_items()],
     }
 
