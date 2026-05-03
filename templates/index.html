@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>The Senate JOLT</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+    <header class="hero">
+        <div>
+            <h1>The Senate JOLT</h1>
+            <p>Senate schedule monitoring (Debug Mode)</p>
+            <a class="button" href="/refresh">Refresh</a>
+            <div class="meta">Source: {{ source_name }}</div>
+            {% if last_updated %}
+            <div class="meta">Updated: {{ last_updated }}</div>
+            {% endif %}
+        </div>
+    </header>
+
+    <section class="dashboard">
+        <article class="alert-card">
+            <h2>Senate Schedule (Filtered)</h2>
+            {% if schedule_lines %}
+            <ul class="schedule-list">
+                {% for line in schedule_lines %}
+                <li>{{ line }}</li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p>No schedule lines extracted.</p>
+            {% endif %}
+        </article>
+    </section>
+</div>
+</body>
+</html>
