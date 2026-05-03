@@ -208,6 +208,13 @@ PLACEHOLDER_VALUES = {
     "the senate is considering current floor business and related procedural actions",
     "a senator made floor remarks","general floor update"
 }
+GLOBAL_SUPPRESSED_VALUES = {
+    "earlier",
+    "no immediate location change",
+    "earlier item. keep for context only",
+    "the senate is considering current floor business",
+    "a senator made floor remarks",
+}
 
 
 def is_meaningful(value: Optional[str]) -> bool:
@@ -1767,6 +1774,60 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
     return g
 
 
+def filter_global_boilerplate(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    v = clean(str(value))
+    if not v:
+        return None
+    return None if v.lower() in GLOBAL_SUPPRESSED_VALUES else v
+
+
+def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
+    remarks = []
+    unnamed = 0
+    for item in items:
+        if item.category != "Remarks":
+            continue
+        if item.senators_detected or is_meaningful(item.topic):
+            remarks.append(item)
+        else:
+            unnamed += 1
+    if unnamed:
+        remarks.append(JoltItem(
+            source="Derived",
+            raw=f"Additional floor remarks ({unnamed})",
+            date_label=None, time_label=None, sort_datetime=None, category="Remarks",
+            title=f"Additional floor remarks ({unnamed})", urgency="low", status="inferred",
+            confidence="medium", quality="summary", location=None, building=None, measure=None,
+            takeaway=f"Additional floor remarks ({unnamed})", where_to_be="", movement_cue="",
+            who_to_watch="", coverage_note="", staff_note="", gallery_note="", senators_detected=[],
+            coverage_target=None, press_availability="", best_window="", event_type=None, committee=None, url=None, topic=None
+        ))
+    return remarks
+
+
+def build_procedural_context(items: List[JoltItem]) -> List[JoltItem]:
+    out = []
+    for item in items:
+        raw = f"{item.title} {item.raw}".lower()
+        title = None
+        if "cloture filed" in raw or "filed cloture" in raw:
+            title = "Cloture filed on nomination"
+        elif "cloture vote" in raw or "motion to invoke cloture" in raw or "invoked cloture" in raw:
+            title = "Cloture vote held"
+        elif "unanimous consent" in raw:
+            title = "Unanimous consent action"
+        elif "adjourn" in raw:
+            title = "Senate adjourned"
+        elif "vote underway" in raw or "now voting" in raw:
+            title = "Vote underway"
+        if title:
+            item.title = title
+            out.append(item)
+    return out
+
+
 HIGH_INTEREST_TOPICS = ["fisa","appropriations","nominations","defense","foreign relations","judiciary","budget","shutdown","continuing resolution","reconciliation","iran","ukraine","israel","immigration","investigations","ethics","leadership","supreme court","cr"]
 def score_signal(item: JoltItem) -> int:
     score = {"primary": 40, "secondary": 25, "tertiary": 10, "human": 45}.get(item.signal_class, 10)
@@ -2084,14 +2145,12 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
     if parsed:
         cards = []
-        for a in parsed[:6]:
-            text = a.get("text", "")
+        for text in parsed[:6]:
             lower_text = text.lower()
             if any(x in lower_text for x in ["wrap up for", "confirmed:", "agreed to:", "passed:"]):
                 continue
             action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
-            chamber_phase = "Executive session" if "executive" in lower_text or "nomination" in lower_text else "Legislative business"
-            when = timing if action in {"Cloture vote", "Adoption vote"} else (" · ".join(x for x in [a.get("date_label"), a.get("time_label")] if x) or timing)
+            when = timing if action in {"Cloture vote", "Adoption vote"} else timing
             title = extract_measure(text) or text[:90]
             cards.append(f"""
             <article class='card'>
@@ -2099,21 +2158,18 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
                     <div><strong>Timing:</strong> {html.escape(when)}</div>
-                    <div><strong>Chamber phase:</strong> {html.escape(chamber_phase)}</div>
-                    <div><strong>Context:</strong> {html.escape(text)}</div>
                 </div>
                 <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
             """)
-        if any("executive calendar #727" in (a.get("text", "").lower()) and "kevin warsh" in (a.get("text", "").lower()) for a in parsed):
+        cloture_filed = schedule_context.get("cloture_filed", [])
+        if any("executive calendar #727" in clean(x).lower() and "kevin warsh" in clean(x).lower() for x in cloture_filed):
             cards.append(f"""
             <article class='card'>
                 <h3>Executive Calendar #727 Kevin Warsh</h3>
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> Cloture filed</div>
                     <div><strong>Timing:</strong> Future floor action not yet scheduled</div>
-                    <div><strong>Chamber phase:</strong> Executive session</div>
-                    <div><strong>Context:</strong> Cloture has been filed, signaling possible future floor consideration.</div>
                 </div>
                 <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
             </article>
@@ -2293,7 +2349,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         links.append(f"<a class='source' href='{html.escape(item.url)}' target='_blank'>{'Open Congressional Reporters' if item.source == 'Congressional Reporters' else 'Open source'}</a>")
 
     if item.category == "Committee Meetings & Hearings":
-        has_real_details = any([
+        has_real_details = all([
             is_meaningful(item.committee), is_meaningful(item.topic), is_meaningful(item.location), is_meaningful(item.time_label)
         ])
         if not has_real_details:
@@ -2303,13 +2359,18 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     description = item.takeaway if is_meaningful(item.takeaway) else ""
 
     logistics_rows = []
-    if is_meaningful(item.coverage_location): logistics_rows.append(("Coverage location", item.coverage_location))
-    if is_meaningful(item.coverage_window): logistics_rows.append(("Coverage window", item.coverage_window))
-    if is_meaningful(item.coverage_action or item.action_line): logistics_rows.append(("Coverage guidance", item.coverage_action or item.action_line))
-    if is_meaningful(item.who_to_watch) and item.who_to_watch != "Senate Committee": logistics_rows.append(("Who to watch", item.who_to_watch))
-    if is_meaningful(item.coverage_type) and item.coverage_type != "Committee meeting": logistics_rows.append(("Coverage type", item.coverage_type))
-    if is_meaningful(item.legislative_context) and item.legislative_context != "A Senate committee is holding a scheduled meeting or hearing.": logistics_rows.append(("Legislative context", item.legislative_context))
-    if is_meaningful(item.public_value) and item.public_value != "Official Senate committee meeting listing.": logistics_rows.append(("Why it matters", item.public_value))
+    if is_meaningful(filter_global_boilerplate(item.coverage_location)): logistics_rows.append(("Coverage location", filter_global_boilerplate(item.coverage_location)))
+    if is_meaningful(filter_global_boilerplate(item.coverage_window)): logistics_rows.append(("Coverage window", filter_global_boilerplate(item.coverage_window)))
+    guidance = filter_global_boilerplate(item.coverage_action or item.action_line)
+    if is_meaningful(guidance): logistics_rows.append(("Coverage guidance", guidance))
+    watch = filter_global_boilerplate(item.who_to_watch)
+    if is_meaningful(watch) and watch != "Senate Committee": logistics_rows.append(("Who to watch", watch))
+    ctype = filter_global_boilerplate(item.coverage_type)
+    if is_meaningful(ctype) and ctype != "Committee meeting": logistics_rows.append(("Coverage type", ctype))
+    lc = filter_global_boilerplate(item.legislative_context)
+    if is_meaningful(lc) and lc != "A Senate committee is holding a scheduled meeting or hearing.": logistics_rows.append(("Legislative context", lc))
+    pv = filter_global_boilerplate(item.public_value)
+    if is_meaningful(pv) and pv != "Official Senate committee meeting listing.": logistics_rows.append(("Why it matters", pv))
 
     logistics = ""
     if logistics_rows:
@@ -2473,6 +2534,9 @@ def dashboard(
 
         groups = grouped(main_items)
         all_groups = grouped(all_items)
+        floor_remarks_items = build_floor_remarks(all_groups.get("Remarks", []))
+        procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
+        earlier_items = all_groups.get("Earlier Floor Activity", [])[:7]
 
         now_item = important_now(items)
         next_items = next_90(items)
@@ -2780,9 +2844,9 @@ def dashboard(
                                 <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
-                {section("Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
-                {section("Procedural Context", all_groups.get("Notes", []), view, collapsed=True)}
-                {section("Earlier Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
+                {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
+                {section("Procedural Context", procedural_items, view, collapsed=True)}
+                {section("Earlier Activity", earlier_items, view, collapsed=True)}
                 {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
                 <div class="links">
