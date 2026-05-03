@@ -241,11 +241,11 @@ def fetch_url(url: str, timeout: int = 20) -> str:
 def fetch_forward_schedule_sources() -> Dict[str, Any]:
     sources = [
         ("daily_press", CONGRESSIONAL_REPORTERS_URL, False),
-        ("radio_tv", RADIO_TV_URL, False),
         ("senate_dems_schedule", SENATE_DEMS_SCHEDULE_URL, False),
+        ("floor_schedule", FLOOR_ACTIVITY_URL, False),
+        ("radio_tv", RADIO_TV_URL, False),
         ("senate_dems_floor", SENATE_DEMS_FLOOR_URL, False),
         ("executive_calendar", EXECUTIVE_CALENDAR_URL, True),
-        ("floor_activity", FLOOR_ACTIVITY_URL, False),
     ]
     loaded = []
     texts = []
@@ -480,6 +480,10 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         vote_block_extraction_method = "pattern_a_fallback"
 
     cloture_filed = []
+    for m in re.finditer(r"cloture (?:has been )?filed on\s*(Executive Calendar\s*#\d+\s+[^.;]*)", accepted, flags=re.I):
+        candidate = clean(m.group(1)).rstrip(".")
+        if candidate:
+            cloture_filed.append(candidate)
     if block_line:
         expected_votes_source = "structured_block"
         lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
@@ -1111,6 +1115,22 @@ def extract_topic(text: str) -> Optional[str]:
     return None
 
 
+def floor_remark_signal_label(item: JoltItem) -> Optional[str]:
+    raw = clean(f"{item.title} {item.raw}")
+    lower = raw.lower()
+    leadership_names = {"john thune", "chuck schumer", "dick durbin", "mitch mcconnell"}
+    first = (item.senators_detected[0].lower() if item.senators_detected else "")
+    if first in leadership_names:
+        return "Leadership"
+    if any(x in lower for x in ["s.res.690", "executive calendar #728", "executive calendar #727", "vote block", "roll call vote"]):
+        return "Tied to next floor action"
+    if any(x in lower for x in ["motion to proceed", "cloture", "unanimous consent", "objected", "executive session"]):
+        return "Procedural"
+    if any(x in lower for x in ["nomination", "confirmation", "executive calendar"]):
+        return "Nomination-related"
+    if "vote" in lower:
+        return "Vote-related"
+    return None
 
 
 def coverage_value_for_item(item: JoltItem) -> str:
@@ -1792,6 +1812,9 @@ def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
         if item.senators_detected:
             senator_name = item.senators_detected[0]
             remark_line = " · ".join(x for x in [senator_name, item.date_label, item.time_label] if x)
+            label = floor_remark_signal_label(item)
+            if label:
+                remark_line = f"{remark_line} — {label}"
             normalized = JoltItem(**asdict(item))
             normalized.title = remark_line
             normalized.takeaway = ""
@@ -2198,6 +2221,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
                     <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
+                    <div><strong>Chamber phase:</strong> Executive session</div>
+                    <div><strong>Context:</strong> {html.escape('En bloc consideration of 49 nominations.' if 's.res.690' in lower_text or 'calendar #5' in lower_text else 'Vote on whether to limit debate on the nomination.' if 'cloture' in lower_text and 'warsh' in lower_text else 'Expected floor consideration from current schedule sources.')}</div>
                 </div>
             </article>
             """)
@@ -2210,6 +2235,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> Cloture filed</div>
                     <div><strong>Timing:</strong> Future floor action not yet scheduled</div>
+                    <div><strong>Chamber phase:</strong> Executive session</div>
+                    <div><strong>Context:</strong> Cloture has been filed, signaling possible future floor consideration.</div>
                 </div>
             </article>
             """)
@@ -2379,7 +2406,8 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     when = " · ".join(x for x in [item.date_label, item.time_label] if is_meaningful(x)) or "Time TBD"
 
     links = []
-    if item.committee:
+    committee_event = any(k in clean(f"{item.title} {item.raw}").lower() for k in ["hearing", "committee meeting", "markup", "business meeting"])
+    if item.committee and committee_event:
         links.append(f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>")
     if item.source == 'EBB':
         links.append(f"<a class='source' href='{EBB_URL}' target='_blank'>Open source</a>")
