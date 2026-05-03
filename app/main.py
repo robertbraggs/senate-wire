@@ -91,7 +91,7 @@ MANUAL_GALLERY_NOTES = []
 SEARCHABLE_LINK_LABELS = " ".join(name for name, _ in QUICK_LINKS).lower()
 
 
-@dataclass
+@dataclass(kw_only=True)
 class JoltItem:
     source: str
     raw: str
@@ -157,7 +157,7 @@ class JoltItem:
     links: List[Dict[str, str]] = None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SignalItem:
     id: str
     timestamp: str
@@ -356,7 +356,7 @@ def infer_building(location: Optional[str]) -> Optional[str]:
     if "OHIO CLOCK" in loc:
         return "Ohio Clock corridor"
     if "SUBWAY" in loc:
-        return "Senate subway routes"
+        return "Senate subway walkways"
 
     return None
 
@@ -484,17 +484,17 @@ def classify_floor(raw: str) -> Dict[str, str]:
     if "now voting" in lower:
         title, category, urgency = "Vote Underway", "Votes", "move now"
         takeaway = "The Senate is actively voting."
-        where = "Ohio Clock, chamber exits, Senate subway, or usual stakeout route."
+        where = "Ohio Clock, chamber exits, Senate subway, or usual stakeout area."
         movement = "Move Now if this vote is current; if historical, use only for context."
         watch = "Leadership, bill sponsors, opponents, affected-state Senators."
         coverage = "High-value hallway window. Be in position before Senators finish voting."
         staff = "Vote result determines immediate floor posture."
-        gallery = "Expect member movement around chamber exits and subway routes."
+        gallery = "Expect member movement around chamber exits and subway walkways."
 
     elif "by a vote of" in lower or "roll call vote" in lower:
         title, category, urgency = "Roll Call Vote", "Votes", "watch"
         takeaway = "The Senate recorded a vote."
-        where = "Post-vote exits, Ohio Clock, stakeout positions, or Senator office routes."
+        where = "Post-vote exits, Ohio Clock, stakeout positions, or Senator office hallways."
         movement = "Good reaction window immediately after the vote."
         watch = "Sponsors, opponents, party leaders, swing votes, absences."
         coverage = "Good moment for reaction, especially if vote was close or procedural."
@@ -514,7 +514,7 @@ def classify_floor(raw: str) -> Dict[str, str]:
     elif "invoked cloture" in lower:
         title, category, urgency = "Cloture Invoked", "Floor Action", "watch"
         takeaway = "Debate has been limited; the Senate is moving toward final action."
-        where = "Monitor chamber exits and leadership routes after the vote."
+        where = "Monitor chamber exits and leadership hallways after the vote."
         movement = "Watch for final vote timing and post-cloture agreement."
         watch = "Leadership, floor managers, opponents, nomination stakeholders."
         coverage = "Final vote timing may become clearer after this."
@@ -635,7 +635,7 @@ def compute_press_availability(item: JoltItem) -> tuple[str, str]:
     if "vote" in text:
         window = "after vote" if "ended" in text or "by a vote of" in text else "before vote"
     elif "hearing" in text or "markup" in text:
-        window = "outside hearing room"
+        window = "committee room / public access areas"
     else:
         window = "scheduled event location"
 
@@ -1045,7 +1045,7 @@ def classify_ebb(raw: str) -> Dict[str, str]:
     elif "press conference" in lower or "media availability" in lower:
         movement = "Arrive early for camera position and speaker arrival."
     else:
-        movement = "Use time/location to plan crew movement; confirm details before deploying."
+        movement = "Use time/location to plan coverage timing; confirm details before coverage."
 
     watch = committee or "Event host, committee members, witnesses, leadership, or announced Senators."
 
@@ -1221,7 +1221,7 @@ def fetch_committee_meetings_items() -> List[JoltItem]:
                 senators_detected=[],
                 coverage_target="committee",
                 press_availability="High" if is_press else "Medium",
-                best_window="outside hearing room",
+                best_window="committee room / public access areas",
                 event_type="Hearing/Meeting",
                 committee=committee,
                 url=m.get("url") or f"https://www.congress.gov/committee-meetings",
@@ -1278,7 +1278,7 @@ def get_all_items() -> List[JoltItem]:
         item.press_availability, item.best_window = compute_press_availability(item)
         item.signal_score = score_signal(item)
         item.action_confidence = "High" if item.signal_score >= 80 else "Medium" if item.signal_score >= 55 else "Low" if item.signal_score >= 25 else "Monitor only"
-        item.movement_status = "Context only" if item.status == "historical" else "Move Now" if item.signal_score >= 80 else "Prepare to move" if item.signal_score >= 55 and item.best_window in {"before vote", "outside hearing room", "scheduled event location"} else "Watch" if item.signal_score >= 55 else "Monitor"
+        item.movement_status = "Context only" if item.status == "historical" else "Move Now" if item.signal_score >= 80 else "Prepare to move" if item.signal_score >= 55 and item.best_window in {"before vote", "committee room / public access areas", "scheduled event location"} else "Watch" if item.signal_score >= 55 else "Monitor"
         item.coverage_value = "High" if item.signal_score >= 80 else "Medium" if item.signal_score >= 55 else "Low"
         if item.status == "historical":
             item.action_line = "Earlier item. Keep for context only."
@@ -1576,7 +1576,7 @@ def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
         minutes_since = (now - dt).total_seconds() / 60
         if 0 <= minutes_since <= 30:
             return {
-                "where_to_be_now": "Hallway reaction routes near chamber exits and Ohio Clock",
+                "where_to_be_now": "Hallway reaction areas near chamber exits and Ohio Clock",
                 "movement": "Watch",
                 "watch": "Post-vote reactions from sponsors, opponents, leadership, and absences.",
             }
@@ -1844,9 +1844,24 @@ def dashboard(
         all_groups = grouped(all_items)
 
         now_item = important_now(items)
-        ticker = movement_ticker(items)
         next_items = next_90(items)
         top_banner = movement_banner(items)
+        signals = to_signal_items(items) if items else []
+        top_signal = signals[0] if signals else None
+        coverage_timing = "Expected" if next_items else "No active window"
+        watch_list = ", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule"
+        if top_signal:
+            ticker_status = _status_label(top_signal.total_score)
+            ticker_location = top_banner.get("where_to_be_now") or "No active coverage location"
+            ticker_why = top_banner.get("watch") or "Floor, event, or committee updates may drive coverage."
+            ticker_guidance = next_items[0].action_line if next_items else "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities."
+        else:
+            ticker_status = "Low Activity"
+            ticker_location = "No active coverage location"
+            coverage_timing = "No active window"
+            watch_list = "Leadership, EBB, committee schedule"
+            ticker_why = "No active floor or media-event trigger."
+            ticker_guidance = "Monitor floor updates, EBB postings, and committee schedules."
 
         today = datetime.now().strftime("%A, %B %d, %Y").replace(" 0", " ")
 
@@ -2110,7 +2125,7 @@ def dashboard(
                 {f"<p class='empty'>No matching JOLT items found. Try Senator, state, committee, room, bill number, vote, or topic.</p>" if q and not items else ""}
 
                 <div class="ticker">
-                    <strong>WHERE TO BE NOW</strong><br>Status: {_status_label(to_signal_items(items)[0].total_score) if items else "Low Activity"}<br>Coverage location: {html.escape(top_banner["where_to_be_now"])}<br>Coverage timing: {"Expected" if next_items else "No active window"}<br>Watch: {html.escape(", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule")}<br>Why this matters: {html.escape(top_banner["watch"])}<br><strong>Coverage guidance</strong><br>{html.escape(next_items[0].action_line if next_items else "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities.")}</div>
+                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
                 <div class="status">
                     {status_bar}
@@ -2134,7 +2149,6 @@ def dashboard(
                 {section("Key Votes", groups.get("Votes", []), view)}
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
-                {section("Senate Floor Activity Notes", all_groups.get("Floor Action", []), view, collapsed=True)}
                 {section("Key Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
                 {section("Legislative Context", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
@@ -2145,7 +2159,7 @@ def dashboard(
                     {quick_links}
                     
                 </div>
-                <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide security guidance, restricted-access information, or nonpublic operational details.</p></section>
+                <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
         </body>
         </html>
