@@ -15,53 +15,61 @@ CONGRESSIONAL_REPORTERS_URL = "https://www.dailypress.senate.gov/"
 EBB_URL = "https://ebbs.senate.gov/"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 
-app = FastAPI(title=APP_NAME, version="7.1.0")
+app = FastAPI(title=APP_NAME, version="8.0.0")
 
 
-COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly?q=%7B%22chamber%22%3A%22Senate%22%7D"
+COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly/2026/04/27?q=%7B%22chamber%22%3A%22Senate%22%7D"
+CONGRESS_API_BASE = "https://api.congress.gov/v3"
+CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY")
 
 QUICK_LINKS = [
-    ("Floor Live", "https://www.senate.gov/legislative/floor_activity_pail.htm"),
-    ("Roll Calls", "https://www.senate.gov/legislative/votes_new.htm"),
-    ("EBB", EBB_URL),
-    ("Committee Schedule", COMMITTEE_SCHEDULE_URL),
-    ("Senate Committee Meetings", "https://www.senate.gov/committees/hearings_meetings.htm"),
-    ("Press Secretary Contacts", "https://www.radiotv.senate.gov/gallery-members/press-secretary-contacts/"),
-    ("Committee Press Contacts", "https://www.radiotv.senate.gov/gallery-members/commitee-press-contacts/"),
-    ("Journalist Contacts / Gallery Regulars", "https://www.radiotv.senate.gov/press-secretaries/gallery-regulars/"),
     ("Coverage Rules", "https://www.radiotv.senate.gov/gallery-members/coverage-rules/"),
     ("Coverage Locations", "https://www.radiotv.senate.gov/gallery-members/coverage-locations/"),
+    ("Press Secretary Contacts", "https://www.radiotv.senate.gov/gallery-members/press-secretary-contacts/"),
+    ("Committee Press Contacts", "https://www.radiotv.senate.gov/gallery-members/commitee-press-contacts/"),
+    ("Senate Calendar", "https://www.radiotv.senate.gov/gallery-members/#senate-calendar"),
+    ("Roll Call Votes", "https://www.senate.gov/legislative/votes_new.htm"),
+    ("Executive Calendar", "https://www.senate.gov/legislative/LIS/executive_calendar/xcalv.pdf"),
+    ("Committee Assignments", "https://www.senate.gov/general/committee_assignments/assignments.htm"),
+    ("Rules & Procedure", "https://www.senate.gov/legislative/rules_procedure.htm"),
     ("Congressional Record", "https://www.congress.gov/congressional-record"),
-    ("Executive Calendar", "https://www.senate.gov/legislative/executive_calendar.htm"),
+    ("Congress.gov Committee Schedule", COMMITTEE_SCHEDULE_URL),
+    ("EBB", EBB_URL),
 ]
 
 
 SENATORS = [
-    {"full": "John Thune", "last": "Thune", "party_state": "R-SD", "coverage_target": "leadership"},
-    {"full": "Chuck Schumer", "last": "Schumer", "party_state": "D-NY", "coverage_target": "leadership"},
-    {"full": "Mitch McConnell", "last": "McConnell", "party_state": "R-KY", "coverage_target": "leadership"},
-    {"full": "Dick Durbin", "last": "Durbin", "party_state": "D-IL", "coverage_target": "leadership"},
-    {"full": "Susan Collins", "last": "Collins", "party_state": "R-ME", "coverage_target": "committee"},
-    {"full": "Lisa Murkowski", "last": "Murkowski", "party_state": "R-AK", "coverage_target": "issue senator"},
-    {"full": "Rand Paul", "last": "Paul", "party_state": "R-KY", "coverage_target": "issue senator"},
-    {"full": "Bernie Sanders", "last": "Sanders", "party_state": "I-VT", "coverage_target": "issue senator"},
-    {"full": "Elizabeth Warren", "last": "Warren", "party_state": "D-MA", "coverage_target": "issue senator"},
-    {"full": "Ted Cruz", "last": "Cruz", "party_state": "R-TX", "coverage_target": "issue senator"},
-    {"full": "Amy Klobuchar", "last": "Klobuchar", "party_state": "D-MN", "coverage_target": "issue senator"},
-    {"full": "Lindsey Graham", "last": "Graham", "party_state": "R-SC", "coverage_target": "committee"},
-    {"full": "Cory Booker", "last": "Booker", "party_state": "D-NJ", "coverage_target": "issue senator"},
-    {"full": "Mike Lee", "last": "Lee", "party_state": "R-UT", "coverage_target": "issue senator"},
-    {"full": "Brian Schatz", "last": "Schatz", "party_state": "D-HI", "coverage_target": "issue senator"},
-    {"full": "Chris Murphy", "last": "Murphy", "party_state": "D-CT", "coverage_target": "issue senator"},
+    {"full": "John Thune", "last": "Thune", "party": "R", "state": "SD", "role": "Majority Leader", "coverage_target": "leadership"},
+    {"full": "Chuck Schumer", "last": "Schumer", "party": "D", "state": "NY", "role": "Minority Leader", "coverage_target": "leadership"},
+    {"full": "Mitch McConnell", "last": "McConnell", "party": "R", "state": "KY", "role": "Senator", "coverage_target": "leadership"},
+    {"full": "Dick Durbin", "last": "Durbin", "party": "D", "state": "IL", "role": "Minority Whip", "coverage_target": "leadership"},
+    {"full": "James Lankford", "last": "Lankford", "party": "R", "state": "OK", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Susan Collins", "last": "Collins", "party": "R", "state": "ME", "role": "Senator", "coverage_target": "committee"},
+    {"full": "Lisa Murkowski", "last": "Murkowski", "party": "R", "state": "AK", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Rand Paul", "last": "Paul", "party": "R", "state": "KY", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Bernie Sanders", "last": "Sanders", "party": "I", "state": "VT", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Elizabeth Warren", "last": "Warren", "party": "D", "state": "MA", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Ted Cruz", "last": "Cruz", "party": "R", "state": "TX", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Amy Klobuchar", "last": "Klobuchar", "party": "D", "state": "MN", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Lindsey Graham", "last": "Graham", "party": "R", "state": "SC", "role": "Senator", "coverage_target": "committee"},
+    {"full": "Cory Booker", "last": "Booker", "party": "D", "state": "NJ", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Mike Lee", "last": "Lee", "party": "R", "state": "UT", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Brian Schatz", "last": "Schatz", "party": "D", "state": "HI", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Alex Padilla", "last": "Padilla", "party": "D", "state": "CA", "role": "Senator", "coverage_target": "issue senator"},
+    {"full": "Ron Wyden", "last": "Wyden", "party": "D", "state": "OR", "role": "Senator", "coverage_target": "committee"},
+    {"full": "Chris Murphy", "last": "Murphy", "party": "D", "state": "CT", "role": "Senator", "coverage_target": "issue senator"},
 ]
 
 SENATOR_MAP = {x["full"]: x for x in SENATORS}
+for _s in SENATORS:
+    _s["party_state"] = f"{_s['party']}-{_s['state']}"
 
 MANUAL_GALLERY_NOTES = [
     # Add manually curated notes here when needed.
     # Example:
     # "Cameras should stage near the Ohio Clock ahead of the first vote window.",
 ]
+SEARCHABLE_LINK_LABELS = " ".join(name for name, _ in QUICK_LINKS).lower()
 
 
 @dataclass
@@ -87,22 +95,25 @@ class JoltItem:
     coverage_note: str
     staff_note: str
     gallery_note: str
-    senators_detected: str
-    coverage_target: str
+    senators_detected: List[str]
+    coverage_target: Optional[str]
     press_availability: str
     best_window: str
     event_type: Optional[str]
     committee: Optional[str]
     url: Optional[str]
-    senators_detected: List[str]
-    coverage_target: Optional[str]
-    committee: Optional[str]
+    topic: Optional[str]
+    congress_bill_title: Optional[str] = None
+    congress_latest_action: Optional[str] = None
+    congress_policy_area: Optional[str] = None
+    congress_sponsors: Optional[str] = None
+    congress_url: Optional[str] = None
 
 
 SOURCE_STATUS = {
     "congressional_reporters": "not loaded",
     "ebb": "not loaded",
-    "x": "disabled: missing X_BEARER_TOKEN",
+    "congress_api": "disabled: missing key" if not CONGRESS_API_KEY else "loaded",
     "committee_schedule": "linked",
 }
 
@@ -533,13 +544,6 @@ def classify_floor(raw: str) -> Dict[str, str]:
 LEADERSHIP_NAMES = ["Thune", "Schumer", "McConnell", "Durbin"]
 
 
-def detect_senators_and_target(text: str, category: str) -> tuple[str, str]:
-    detected = [name for name in LEADERSHIP_NAMES if re.search(rf"\b{name}\b", text, re.I)]
-    senators = ", ".join(detected) if detected else "None"
-    target = "leadership" if detected else ("committee" if category == "Events" else "sponsor")
-    return senators, target
-
-
 def compute_press_availability(item: JoltItem) -> tuple[str, str]:
     text = f"{item.title} {item.raw}".lower()
     if any(k in text for k in ["vote underway", "now voting", "cloture", "stakeout", "press conference", "media availability"]):
@@ -605,6 +609,61 @@ def detect_senators(text: str) -> List[str]:
     return found
 
 
+def extract_speaker(text: str) -> Optional[str]:
+    senators = detect_senators(text)
+    return senators[0] if senators else None
+
+
+def extract_topic(text: str) -> Optional[str]:
+    patterns = [
+        r"spoke on ([^.;]+)",
+        r"spoke about ([^.;]+)",
+        r"spoke in support of ([^.;]+)",
+        r"spoke in opposition to ([^.;]+)",
+        r"asked unanimous consent to proceed to ([^.;]+)",
+        r"objected to ([^.;]+)",
+        r"regarding ([^.;]+)",
+        r"\bon ([A-Z][^.;]+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.I)
+        if m:
+            return clean(m.group(1)).rstrip(",")
+    return None
+
+
+def classify_coverage_target(item: JoltItem) -> Optional[str]:
+    return infer_coverage_target(item.raw, item.senators_detected, item.committee, item.measure)
+
+
+def fetch_congress_bill_info(measure: Optional[str]) -> Dict[str, Optional[str]]:
+    if not measure:
+        return {}
+    search_url = f"https://www.congress.gov/search?q=%7B%22search%22%3A%22{measure}%22%7D"
+    if not CONGRESS_API_KEY:
+        return {"congress_url": search_url}
+    try:
+        m = re.search(r"^(S|H\\.R\\.|S\\.Res\\.|S\\.J\\.Res\\.|H\\.J\\. Res\\.|H\\. Res\\.)\\s*(\\d+)$", measure, re.I)
+        if not m:
+            return {"congress_url": search_url}
+        bill_type = m.group(1).lower().replace(".", "").replace(" ", "")
+        bill_number = m.group(2)
+        url = f"{CONGRESS_API_BASE}/bill/119/{bill_type}/{bill_number}?api_key={CONGRESS_API_KEY}&format=json"
+        data = requests.get(url, timeout=12).json().get("bill", {})
+        action = data.get("latestAction", {})
+        sponsors = ", ".join([s.get("fullName", "") for s in data.get("sponsors", [])[:3] if s.get("fullName")])
+        return {
+            "congress_bill_title": data.get("title"),
+            "congress_latest_action": action.get("text"),
+            "congress_policy_area": (data.get("policyArea") or {}).get("name"),
+            "congress_sponsors": sponsors or None,
+            "congress_url": data.get("url") or search_url,
+        }
+    except Exception:
+        SOURCE_STATUS["congress_api"] = "error"
+        return {"congress_url": search_url}
+
+
 def infer_coverage_target(raw: str, senators: List[str], committee: Optional[str], measure: Optional[str]) -> Optional[str]:
     if senators:
         targets = [SENATOR_MAP[s]["coverage_target"] for s in senators if s in SENATOR_MAP]
@@ -646,7 +705,7 @@ def parse_floor_item(raw: str, fallback_date: Optional[date]) -> JoltItem:
             c["title"] = f"Floor Note: {measure}"
             c["takeaway"] = f"Floor note tied to {measure}."
 
-    senators, target = detect_senators_and_target(raw, c["category"])
+    topic = extract_topic(raw)
     item = JoltItem(
         source="Congressional Reporters",
         raw=raw,
@@ -670,16 +729,16 @@ def parse_floor_item(raw: str, fallback_date: Optional[date]) -> JoltItem:
         staff_note=c["staff_note"],
         gallery_note=c["gallery_note"],
         senators_detected=senators,
-        coverage_target=target,
+        coverage_target=coverage_target,
         press_availability="",
         best_window="",
         event_type=None,
-        committee=None,
-        url=CONGRESSIONAL_REPORTERS_URL,
-        senators_detected=senators,
-        coverage_target=coverage_target,
         committee=committee,
+        url=CONGRESSIONAL_REPORTERS_URL,
+        topic=topic,
     )
+    item.coverage_target = classify_coverage_target(item)
+    item.__dict__.update(fetch_congress_bill_info(item.measure))
 
     return apply_past_status(item)
 
@@ -898,16 +957,14 @@ def fetch_ebb_items() -> List[JoltItem]:
                 coverage_note="EBB events are not available to this app from the current network.",
                 staff_note="Use direct EBB access for confirmed events.",
                 gallery_note="Confirm EBB availability or add a manual events feed.",
-                senators_detected="None",
-                coverage_target="committee",
+                senators_detected=[],
+                coverage_target=None,
                 press_availability="Low",
                 best_window="scheduled event location",
                 event_type=None,
-                committee=None,
                 url=EBB_URL,
-                senators_detected=[],
-                coverage_target=None,
                 committee=None,
+                topic=None,
             )
         ]
 
@@ -930,7 +987,7 @@ def fetch_ebb_items() -> List[JoltItem]:
         committee = infer_ebb_committee(raw)
         coverage_target = infer_coverage_target(raw, senators, committee, None)
 
-        senators, target = detect_senators_and_target(raw, "Events")
+        topic = extract_topic(raw)
         item = JoltItem(
             source="EBB",
             raw=shorten(raw, 700),
@@ -954,16 +1011,15 @@ def fetch_ebb_items() -> List[JoltItem]:
             staff_note=c["staff_note"],
             gallery_note=c["gallery_note"],
             senators_detected=senators,
-            coverage_target=target,
+            coverage_target=coverage_target,
             press_availability="",
             best_window="",
             event_type=c.get("event_type"),
-            committee=c.get("committee"),
-            url=EBB_URL,
-            senators_detected=senators,
-            coverage_target=coverage_target,
             committee=committee,
+            url=EBB_URL,
+            topic=topic,
         )
+        item.coverage_target = classify_coverage_target(item)
 
         items.append(apply_past_status(item))
 
@@ -1036,6 +1092,16 @@ def filter_items(items: List[JoltItem], q: Optional[str], view: str, show_earlie
         or (x.location and q in x.location.lower())
         or (x.building and q in x.building.lower())
         or (x.measure and q in x.measure.lower())
+        or (x.source and q in x.source.lower())
+        or (x.date_label and q in x.date_label.lower())
+        or (x.time_label and q in x.time_label.lower())
+        or (x.topic and q in x.topic.lower())
+        or (x.committee and q in x.committee.lower())
+        or (x.coverage_target and q in x.coverage_target.lower())
+        or (x.press_availability and q in x.press_availability.lower())
+        or any(q in s.lower() for s in x.senators_detected)
+        or any(q in SENATOR_MAP[s]["party_state"].lower() for s in x.senators_detected if s in SENATOR_MAP)
+        or q in SEARCHABLE_LINK_LABELS
     ]
 
 
@@ -1218,9 +1284,12 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     building = f"<div><strong>Building:</strong> {html.escape(item.building)}</div>" if item.building else ""
     measure = f"<span class='pill'>{html.escape(item.measure)}</span>" if item.measure else ""
     senators_line = ""
+    speaker_line = ""
     if item.senators_detected:
         labels = [f"{name} ({SENATOR_MAP[name]['party_state']})" for name in item.senators_detected if name in SENATOR_MAP]
-        senators_line = f"<div><strong>Senators:</strong> {html.escape(', '.join(labels))}</div>" if labels else ""
+        heading = "Senator" if len(labels) == 1 else "Senators"
+        senators_line = f"<div><strong>{heading}:</strong> {html.escape(', '.join(labels))}</div>" if labels else ""
+        speaker_line = f"<div><strong>Speaker:</strong> {html.escape(labels[0])}</div>" if labels else ""
     coverage_line = f"<div><strong>Coverage target:</strong> {html.escape(item.coverage_target)}</div>" if item.coverage_target else ""
 
     note = item.coverage_note
@@ -1244,23 +1313,25 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             {building}
             <div><strong>Movement:</strong> {html.escape(item.movement_cue)}</div>
             <div><strong>Watch:</strong> {html.escape(item.who_to_watch)}</div>
+            {speaker_line}
             {senators_line}
+            {f"<div><strong>Topic:</strong> {html.escape(item.topic)}</div>" if item.topic else ""}
             {coverage_line}
             <div><strong>Note:</strong> {html.escape(note)}</div>
             <div><strong>Quality:</strong> {html.escape(item.quality)}</div>
         </div>
-        {f"<a class='source' href='https://www.congress.gov/search?q=%7B%22search%22%3A%22{html.escape(item.measure)}%22%7D' target='_blank'>Congress.gov: {html.escape(item.measure)}</a>" if item.measure else ""}
-        {f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Congress.gov Committee Schedule</a>" if item.committee else ""}
+        {f"<a class='source' href='{html.escape(item.congress_url or ('https://www.congress.gov/search?q=%7B%22search%22%3A%22' + item.measure + '%22%7D'))}' target='_blank'>Measure Link</a>" if item.measure else ""}
+        {f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>" if item.committee else ""}
         {f"<a class='source' href='{EBB_URL}' target='_blank'>Open EBB</a>" if item.source == 'EBB' else ""}
-        <a class="source" href="{html.escape(item.url or '#')}" target="_blank">{"Open Source" if item.source == "Congressional Reporters" else "Open source"}</a>
+        <a class="source" href="{html.escape(item.url or '#')}" target="_blank">{"Open Congressional Reporters" if item.source == "Congressional Reporters" else "Open source"}</a>
     </article>
     """
 
 
 def empty_message(title: str) -> str:
     messages = {
-        "Votes": "No active vote window detected. Monitor Congressional Reporters feed and Roll Calls.",
-        "Events / EBB": "No scheduled media event parsed from EBB. Check EBB directly for late additions.",
+        "Votes": "No active vote window detected. Monitor Congressional Reporters feed and Roll Call Votes.",
+        "News Events": "No scheduled media event parsed from EBB. Check EBB directly for late additions.",
         "Committee Schedule": "No committee schedule items parsed. Use Congress.gov Committee Schedule or Senate Committee Meetings.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
@@ -1360,7 +1431,7 @@ def dashboard(
         status_bar = (
             f"<strong>Congressional Reporters:</strong> {html.escape(friendly_status('congressional_reporters'))} &nbsp; "
             f"<strong>EBB:</strong> {html.escape(friendly_status('ebb'))} &nbsp; "
-            f"<strong>X:</strong> {html.escape(friendly_status('x'))} &nbsp; "
+            f"<strong>Congress.gov API:</strong> {html.escape(friendly_status('congress_api'))} &nbsp; "
             f"<strong>Committee Schedule:</strong> {html.escape(friendly_status('committee_schedule'))}"
         )
 
@@ -1650,15 +1721,15 @@ def dashboard(
                     </div>
                 </div>
 
-                {gallery_notes_section()}
-                {section("Coverage Timeline", groups.get("Coverage Timeline", []), view)}
-                {section("Votes", groups.get("Votes", []), view)}
-                {section("Floor Action", groups.get("Floor Action", []), view)}
-                {section("Events / EBB", groups.get("Events", []), view)}
-                {section("Committee Schedule", [], view)}
-                {section("Schedule", groups.get("Schedule", []), view)}
-                {section("Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
-                {section("Notes", all_groups.get("Notes", []), view, collapsed=True)}
+                section("Staff / Gallery Notes", [], view, collapsed=False)
+                {section("Where to Be Now", [now_item] if now_item else [], view)}
+                {section("Key Votes and Schedule", groups.get("Votes", []), view)}
+                {section("Stakeouts", [x for x in groups.get("Events", []) if "stakeout" in x.title.lower()], view)}
+                {section("News Events", groups.get("Events", []), view)}
+                {section("Committee Meetings & Hearings", [x for x in groups.get("Events", []) if x.committee], view)}
+                {section("Senate Floor Schedule", groups.get("Schedule", []), view)}
+                {section("Key Floor Remarks", all_groups.get("Remarks", []), view, collapsed=True)}
+                {section("Legislative Notes", all_groups.get("Notes", []), view, collapsed=True)}
                 {section("Earlier Floor Activity", all_groups.get("Earlier Floor Activity", []), view, collapsed=True)}
 
                 <div class="links">
