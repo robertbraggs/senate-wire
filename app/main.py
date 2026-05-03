@@ -2543,8 +2543,10 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         </article>
         """
     elif item.category == "Earlier Floor Activity":
-        event_type = item.event_type or item.title
-        line = " · ".join(x for x in [event_type, display_date, item.time_label] if x)
+        event_type = clean(item.event_type or item.title or "Floor Activity")
+        action = clean(item.action_line or item.takeaway or item.raw or "Activity update")
+        line = f"{event_type} — {action}"
+        line = " · ".join(x for x in [line, display_date, item.time_label] if x)
         return f"""
         <article class="card">
             <h3>{html.escape(line)}</h3>
@@ -2587,8 +2589,7 @@ def empty_message(title: str) -> str:
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural context updates are active at this time.",
         "Recent Procedure": "No procedural actions in the last 72 hours.",
-        "Background Procedure": "No older procedural context items are available.",
-        "Earlier Activity": "No recent floor activity.",
+        "Recent Activity": "No recent activity.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No upcoming legislation or nomination signals found in public sources.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
@@ -2599,11 +2600,11 @@ def empty_message(title: str) -> str:
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
     if collapsed:
-        limit = 5 if title == "Earlier Activity" else 20
+        limit = 5 if title == "Recent Activity" else 20
         visible = items[:limit]
         cards = "".join(item_card(item, view) for item in visible)
         hidden_count = max(0, len(items) - limit)
-        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Earlier Activity" else ""
+        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Recent Activity" else ""
 
         return f"""
         <section class="section">
@@ -2699,7 +2700,16 @@ def is_recent_earlier_activity(item: JoltItem, now: datetime, session_day: Optio
             dt = dt.replace(tzinfo=None)
     except ValueError:
         return False
-    return dt >= now - timedelta(hours=72) or (session_day is not None and dt.date() == session_day)
+    return dt >= now - timedelta(hours=48) or (session_day is not None and dt.date() == session_day and dt >= now - timedelta(hours=48))
+
+
+def has_meaningful_recent_activity(item: JoltItem) -> bool:
+    text = clean(" ".join([item.title or "", item.raw or "", item.action_line or ""])).strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    generic_terms = {"event", "ebb event", "update", "item"}
+    return lowered not in generic_terms
 
 
 def current_senate_session_day(items: List[JoltItem]) -> Optional[date]:
@@ -2837,16 +2847,16 @@ def dashboard(
         procedural_keys = {x.title.lower() for x in procedural_items}
         suppressed_earlier_terms = ["cloture filed", "cloture vote", "unanimous consent", "adjourn", "vote underway", "now voting"]
         now = datetime.now()
-        recent_procedure, background_procedure = procedural_buckets(procedural_items, now)
-        upcoming_reference_text = _build_upcoming_reference_text(items, now)
-        background_procedure = filter_background_procedure(background_procedure, upcoming_reference_text)
+        recent_procedure, _background_procedure = procedural_buckets(procedural_items, now)
         session_day = current_senate_session_day(all_items)
         earlier_items = [
             x for x in all_groups.get("Earlier Floor Activity", [])
             if not any(t in f"{x.title} {x.raw}".lower() for t in suppressed_earlier_terms)
             and x.title.lower() not in procedural_keys
             and is_recent_earlier_activity(x, now, session_day)
+            and has_meaningful_recent_activity(x)
         ]
+        earlier_items = earlier_items[:5]
 
         now_item = important_now(items)
         next_items = next_90(items)
@@ -3159,8 +3169,7 @@ def dashboard(
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
-                {section("Background Procedure", background_procedure, view, collapsed=True) if background_procedure else ""}
-                {section("Earlier Activity", earlier_items, view, collapsed=True)}
+                {section("Recent Activity", earlier_items, view, collapsed=True)}
                 {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
                 <div class="links">
