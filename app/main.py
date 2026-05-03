@@ -38,6 +38,28 @@ QUICK_LINKS = [
     ("EBB", EBB_URL),
 ]
 
+QUICK_LINK_GROUPS = {
+    "Coverage": [
+        ("Coverage Rules", "https://www.radiotv.senate.gov/gallery-members/coverage-rules/"),
+        ("Coverage Locations", "https://www.radiotv.senate.gov/gallery-members/coverage-locations/"),
+        ("EBB", EBB_URL),
+    ],
+    "Contacts": [
+        ("Press Secretary Contacts", "https://www.radiotv.senate.gov/gallery-members/press-secretary-contacts/"),
+        ("Committee Press Contacts", "https://www.radiotv.senate.gov/gallery-members/commitee-press-contacts/"),
+        ("Gallery Regulars / Journalist Contacts", "https://www.radiotv.senate.gov/gallery-members/"),
+    ],
+    "Floor / Official": [
+        ("Roll Call Votes", "https://www.senate.gov/legislative/votes_new.htm"),
+        ("Executive Calendar", "https://www.senate.gov/legislative/LIS/executive_calendar/xcalv.pdf"),
+        ("Congressional Record", "https://www.congress.gov/congressional-record"),
+        ("Rules & Procedure", "https://www.senate.gov/legislative/rules_procedure.htm"),
+        ("Committee Assignments", "https://www.senate.gov/general/committee_assignments/assignments.htm"),
+        ("Congress.gov Committee Schedule", COMMITTEE_SCHEDULE_URL),
+        ("Senate Committee Meetings", "https://www.senate.gov/committees/hearings_meetings.htm"),
+    ],
+}
+
 
 SENATORS = [
     {"full": "John Thune", "last": "Thune", "party": "R", "state": "SD", "role": "Majority Leader", "coverage_target": "leadership"},
@@ -108,6 +130,13 @@ class JoltItem:
     congress_summary: Optional[str] = None
     congress_official_context: Optional[str] = None
     action_line: str = ""
+    signal_type: str = "low_signal"
+    signal_class: str = "tertiary"
+    signal_score: int = 0
+    action_confidence: str = "Monitor only"
+    movement_status: str = "Monitor"
+    coverage_value: str = "Low"
+    suppressed: bool = False
 
 
 SOURCE_STATUS = {
@@ -1181,7 +1210,27 @@ def dedupe_items(items: List[JoltItem]) -> List[JoltItem]:
 def get_all_items() -> List[JoltItem]:
     items = get_floor_items() + fetch_ebb_items() + fetch_committee_meetings_items() + fetch_x_items()
     for item in items:
+        low = f"{item.title} {item.raw}".lower()
+        if item.source == "EBB":
+            item.signal_class = "primary" if any(k in low for k in ["stakeout", "press conference", "media availability"]) else "secondary"
+            item.signal_type = "stakeout" if "stakeout" in low else "press_conference" if "press conference" in low else "media_availability" if "availability" in low else "ebb_event"
+        elif item.category == "Votes":
+            item.signal_class = "primary"
+            item.signal_type = "floor_vote"
+        elif item.category in {"Floor Action", "Schedule"}:
+            item.signal_class = "secondary"
+            item.signal_type = "floor_action" if item.category == "Floor Action" else "floor_schedule"
+        elif "hearing" in low or "committee" in (item.category.lower()):
+            item.signal_class = "secondary"
+            item.signal_type = "committee_hearing"
+        elif item.source == "Congress.gov API":
+            item.signal_class = "tertiary"
+            item.signal_type = "bill_context"
         item.press_availability, item.best_window = compute_press_availability(item)
+        item.signal_score = score_signal(item)
+        item.action_confidence = "High" if item.signal_score >= 80 else "Medium" if item.signal_score >= 55 else "Low" if item.signal_score >= 25 else "Monitor only"
+        item.movement_status = "Context only" if item.status == "historical" else "Move now" if item.signal_score >= 80 else "Prepare to move" if item.signal_score >= 55 and item.best_window in {"before vote", "outside hearing room", "scheduled event location"} else "Watch" if item.signal_score >= 55 else "Monitor"
+        item.coverage_value = "High" if item.signal_score >= 80 else "Medium" if item.signal_score >= 55 else "Low"
         if item.status == "historical":
             item.action_line = "Earlier item. Keep for context only."
         elif item.category == "Votes" and item.urgency == "move now":
@@ -1269,42 +1318,60 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
     return g
 
 
-def score_item(item: JoltItem) -> int:
-    score = 0
-
+HIGH_INTEREST_TOPICS = ["fisa","appropriations","nominations","defense","foreign relations","judiciary","budget","shutdown","continuing resolution","reconciliation","iran","ukraine","israel","immigration","investigations","ethics","leadership","supreme court","cr"]
+def score_signal(item: JoltItem) -> int:
+    score = {"primary": 40, "secondary": 25, "tertiary": 10, "human": 45}.get(item.signal_class, 10)
+    score += {"move now": 30, "prepare": 20, "watch": 12, "scheduled": 8, "monitor": 3, "historical": -60, "low": 3}.get(item.urgency, 3)
     if item.status == "historical":
-        return -100
-
-    score += {"move now": 100, "watch": 70, "scheduled": 45, "low": 10}.get(item.urgency, 0)
-    score += {"high": 30, "medium": 15, "low": 0}.get(item.confidence, 0)
-
-    if item.time_label:
-        score += 20
-    if item.location and item.location != "Location not parsed":
-        score += 30
-    if item.category == "Votes":
-        score += 15
-    if item.category == "Events":
-        score += 10
-
+        score -= 60
+    minutes = None
     if item.sort_datetime:
         try:
-            dt = datetime.fromisoformat(item.sort_datetime)
-            if dt.tzinfo is not None:
-                dt = dt.replace(tzinfo=None)
-
-            minutes = (dt - datetime.now()).total_seconds() / 60
-
-            if 0 <= minutes <= 90:
-                score += 40
-            elif 90 < minutes <= 240:
-                score += 15
-            elif minutes < 0:
-                score -= 40
-        except ValueError:
-            pass
-
-    return score
+            minutes = (datetime.fromisoformat(item.sort_datetime).replace(tzinfo=None) - datetime.now()).total_seconds() / 60
+        except Exception:
+            minutes = None
+    if minutes is None:
+        score += -5
+    elif -45 <= minutes <= 5:
+        score += 30
+    elif 0 < minutes <= 15:
+        score += 25
+    elif minutes <= 30:
+        score += 20
+    elif minutes <= 90:
+        score += 12
+    elif minutes <= 600:
+        score += 6
+    else:
+        score += -35
+    loc = (item.location or "").lower()
+    if re.search(r"\b(sd|sh|sr)-\d+|s-\d+\b", loc):
+        score += 20
+    elif any(x in loc for x in ["ohio clock", "chamber exits", "subway", "s-325"]):
+        score += 18
+    elif item.building:
+        score += 8
+    else:
+        score += -10
+    if any(x in " ".join(item.senators_detected) for x in LEADERSHIP_NAMES):
+        score += 18
+    elif item.senators_detected:
+        score += 10
+    raw = f"{item.title} {item.raw}".lower()
+    if "vote underway" in raw or "now voting" in raw: score += 35
+    elif "roll call" in raw: score += 25
+    elif "cloture vote" in raw: score += 25
+    elif "stakeout" in raw: score += 30
+    elif "press conference" in raw: score += 28
+    elif "media availability" in raw: score += 28
+    elif "hearing" in raw: score += 15
+    elif "markup" in raw or "business meeting" in raw: score += 18
+    elif "unanimous consent" in raw or "objected" in raw: score += 20
+    elif "remarks" in raw: score += 6
+    topic = (item.topic or "").lower()
+    if any(t in topic for t in HIGH_INTEREST_TOPICS): score += 15
+    score += {"Congressional Reporters": 12, "EBB": 18, "Congress.gov API": 15}.get(item.source, 15 if "senate.gov" in (item.url or "").lower() else 0)
+    return max(0, min(100, int(score)))
 
 
 def important_now(items: List[JoltItem]) -> Optional[JoltItem]:
@@ -1313,7 +1380,7 @@ def important_now(items: List[JoltItem]) -> Optional[JoltItem]:
     if not active:
         return None
 
-    return sorted(active, key=score_item, reverse=True)[0]
+    return sorted(active, key=lambda x: x.signal_score, reverse=True)[0]
 
 
 def next_90(items: List[JoltItem]) -> List[JoltItem]:
@@ -1344,9 +1411,23 @@ def next_90(items: List[JoltItem]) -> List[JoltItem]:
 
 
 def top_actions(items: List[JoltItem]) -> List[str]:
-    ranked = sorted([x for x in items if x.status != "historical"], key=score_item, reverse=True)[:3]
+    ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)[:3]
     actions = [clean((it.action_line or it.movement_cue).split(".")[0]) for it in ranked if (it.action_line or it.movement_cue)]
     return actions[:3]
+def should_show_in_main(item: JoltItem) -> bool:
+    return item.signal_score >= 25 and any([item.time_label, item.location, item.senators_detected, item.topic, item.measure, item.action_line])
+
+def detect_activity_mode(items: List[JoltItem]) -> str:
+    text = " ".join((x.raw + " " + x.title).lower() for x in items)
+    if "pro forma" in text or "recess" in text:
+        return "RECESS_OR_PRO_FORMA"
+    if any(x.signal_type == "floor_vote" and x.status != "historical" for x in items):
+        return "ACTIVE_FLOOR"
+    if any("committee" in (x.signal_type or "") and x.status != "historical" for x in items):
+        return "COMMITTEE_DAY"
+    if any(x.source == "EBB" and x.status != "historical" for x in items):
+        return "EVENT_DAY"
+    return "LOW_ACTIVITY"
 def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
     now = datetime.now()
 
