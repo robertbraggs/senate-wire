@@ -1967,14 +1967,17 @@ def build_procedural_context(items: List[JoltItem]) -> List[JoltItem]:
         elif "cloture vote" in raw or "motion to invoke cloture" in raw or "invoked cloture" in raw:
             title = "Cloture vote held"
             pkey = "cloture vote"
+        elif "unanimous consent" in raw and "request" in raw:
+            title = "UC request"
+            pkey = "uc request"
         elif "unanimous consent" in raw:
-            title = "Unanimous consent action"
+            title = "UC agreement"
             pkey = "unanimous consent"
         elif "adjourn" in raw:
-            title = "Senate adjourned"
+            title = "Senate adjourned (end of legislative day)"
             pkey = "adjournment"
         elif "vote underway" in raw or "now voting" in raw:
-            title = "Vote underway"
+            title = "Roll call vote in progress"
             pkey = "vote underway"
         if title and pkey and pkey not in seen:
             out.append(JoltItem(
@@ -2233,6 +2236,17 @@ def build_forward_schedule_context() -> Dict[str, Any]:
 
 
 def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[str, Any]) -> str:
+    def classify_expected_vote(text: str) -> Tuple[str, str]:
+        lower = clean(text).lower()
+        if "motion to invoke cloture" in lower or "cloture" in lower:
+            return "Cloture vote (limits debate)", "This vote decides whether to limit debate and move toward final Senate action."
+        if "adoption of resolution" in lower or "adoption" in lower:
+            return "Adoption vote (procedural)", "This procedural vote sets up Senate consideration terms before later disposition."
+        if "confirmation" in lower:
+            return "Confirmation vote (final action)", "This is final Senate action on a nomination."
+        if "passage" in lower:
+            return "Passage vote (final legislative action)", "This is final Senate action on legislation."
+        return "Expected floor vote", "This vote advances current floor consideration."
     schedule_context = context.get("schedule_context", {}) if context else {}
     if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_formas")):
         pro_formas = schedule_context.get("pro_formas", [])
@@ -2249,12 +2263,11 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         vote_date_label = vote_block.get("date_label", "")
         vote_label = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
-        fixed_votes = [
-            "Adoption of Calendar #5, S.Res.690 (en bloc consideration of 49 nominations)",
-            "Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination",
-        ]
-        votes_to_render = fixed_votes
-        votes_html = "".join(f"<li>{html.escape(v)}</li>" for v in votes_to_render)
+        votes_to_render = expected_votes[:6]
+        votes_html = "".join(
+            f"<li><strong>{html.escape(classify_expected_vote(v)[0])}</strong>: {html.escape(v)}</li>"
+            for v in votes_to_render
+        ) or "<li>No votes scheduled</li>"
         return f"""
         <div class='card'>
             <!-- May 11 forward schedule fixed path active -->
@@ -2263,7 +2276,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
                 <div><strong>Expected vote block:</strong> {html.escape(vote_label)}</div>
                 <div><strong>Expected votes:</strong><ol>{votes_html}</ol></div>
-                <div><strong>Legislative context:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is expected Monday evening.</div>
+                <div><strong>Legislative context:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is expected to set up executive-session consideration and potential final actions.</div>
                 <div><strong>Coverage timing:</strong> The highest-value public coverage window is the announced vote block.</div>
             </div>
         </div>
@@ -2322,10 +2335,21 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
 
     if parsed:
+        def classify_expected_vote(text: str) -> Tuple[str, str, str]:
+            lower_text = clean(text).lower()
+            if "motion to invoke cloture" in lower_text or "cloture" in lower_text:
+                return "Cloture vote (limits debate)", "Floor Consideration — Executive Session", "If cloture is invoked, debate time is limited and the Senate moves toward confirmation."
+            if "adoption of resolution" in lower_text or "adoption" in lower_text:
+                return "Adoption vote (procedural)", "Morning Business", "Adoption establishes procedural terms that set up subsequent nomination or floor consideration."
+            if "confirmation" in lower_text:
+                return "Confirmation vote (final action)", "Floor Consideration — Executive Session", "After confirmation, the nomination is finally disposed and the Senate proceeds to the next item."
+            if "passage" in lower_text:
+                return "Passage vote (final legislative action)", "Floor Consideration — Legislative Business", "After passage, the measure is finally disposed and transmitted to the next chamber/stage."
+            return "Expected floor action", "Floor Consideration", "This vote advances active floor business."
         cards = []
         for text in parsed[:6]:
             lower_text = text.lower()
-            action = "Cloture vote" if "cloture" in lower_text else "Adoption vote" if "adoption" in lower_text else "Expected floor action"
+            action, chamber_phase, follow_on = classify_expected_vote(text)
             title = extract_measure(text) or text[:90]
             if "calendar #5" in lower_text and "s.res.690" in lower_text:
                 title = "S.Res.690 / Calendar #5"
@@ -2337,8 +2361,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
                     <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
-                    <div><strong>Chamber phase:</strong> Executive session</div>
-                    <div><strong>Context:</strong> {html.escape('En bloc consideration of 49 nominations.' if 's.res.690' in lower_text or 'calendar #5' in lower_text else 'Vote on whether to limit debate on the nomination.' if 'cloture' in lower_text and 'warsh' in lower_text else 'Expected floor consideration from current schedule sources.')}</div>
+                    <div><strong>Chamber phase:</strong> {html.escape(chamber_phase)}</div>
+                    <div><strong>Context:</strong> {html.escape(follow_on)}</div>
                 </div>
             </article>
             """)
@@ -2356,7 +2380,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 </div>
             </article>
             """)
-        return "".join(cards) if cards else empty_message("Forward Look: Legislation & Nominations")
+        return "".join(cards) if cards else "<p class='empty'>No votes scheduled</p>"
 
     include_tokens = ["cloture", "motion to proceed", "confirmation", "nomination", "passage", "roll call", "executive", "s.", "h.r.", "resolution"]
     out = []
@@ -2372,6 +2396,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             continue
         out.append(item)
 
+    if not out and parsed:
+        return "<p class='empty'>No votes scheduled</p>"
     if not out:
         return empty_message("Forward Look: Legislation & Nominations")
 
@@ -2397,10 +2423,26 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
     has_next_expected = bool(schedule_context.get("next_convening") or schedule_context.get("vote_block") or schedule_context.get("expected_votes"))
     has_active_floor = any(x.status != "historical" and x.category in {"Votes", "Floor Action", "Schedule"} for x in items)
     if has_next_expected and not has_active_floor:
+        vote_block = schedule_context.get("vote_block", {})
+        vote_time = schedule_context.get("vote_block_time_label", "Time TBD")
+        vote_date = vote_block.get("date_label", "Next convening day")
+        expected_votes = schedule_context.get("expected_votes", [])
+        vote_types = []
+        for v in expected_votes:
+            lv = v.lower()
+            if "cloture" in lv:
+                vote_types.append("cloture")
+            elif "adoption" in lv:
+                vote_types.append("adoption")
+            elif "confirmation" in lv:
+                vote_types.append("confirmation")
+            elif "passage" in lv:
+                vote_types.append("passage")
+        type_line = ", ".join(dict.fromkeys(vote_types)) if vote_types else "scheduled votes"
         return [
-            "Prepare for May 11 return and expected 5:30 p.m. vote block.",
-            "Monitor EBB for media activity ahead of floor resumption.",
-            "Watch for committee schedule postings before Senate returns.",
+            f"Prepare for the expected vote block ({vote_date} · {vote_time}) and pre-position before roll calls begin.",
+            f"Prioritize {type_line} coverage plans tied to the announced vote block sequence.",
+            "Watch for UC agreement/UC request or cloture-related schedule changes that can move vote timing quickly.",
         ]
     ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
     verbs = ["Monitor", "Track", "Watch", "Confirm"]
@@ -2493,7 +2535,7 @@ def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
     return {
         "where_to_be_now": "No active coverage location",
         "movement": "Monitor",
-        "watch": "No active floor or media-event trigger.",
+        "watch": "No votes scheduled; no active floor trigger is listed in current public schedule sources.",
     }
 
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
@@ -2506,7 +2548,7 @@ def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -
     if groups.get("Schedule"):
         return "Plan around convening time and leader remarks."
 
-    return "Low activity day — monitor for changes and off-floor movement."
+    return "No votes scheduled. No hearings scheduled. No media events listed."
 
 
 def badge_class(urgency: str) -> str:
@@ -2602,18 +2644,18 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
 def empty_message(title: str) -> str:
     messages = {
         "Key Votes": "No votes scheduled or underway.",
-        "News Events & Stakeouts": "No media events currently scheduled. Check EBB for updates.",
-        "Committee Meetings & Hearings": "No committee hearings or meetings currently scheduled.",
+        "News Events & Stakeouts": "No media events listed.",
+        "Committee Meetings & Hearings": "No hearings scheduled.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
-        "Procedural Context": "No procedural context updates are active at this time.",
+        "Procedural Context": "No procedural updates listed.",
         "Recent Procedure": "No procedural actions in the last 72 hours.",
         "Recent Activity": "No recent activity.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
-        "Forward Look: Legislation & Nominations": "No upcoming legislation or nomination signals found in public sources.",
+        "Forward Look: Legislation & Nominations": "No votes scheduled.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
-    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No new developments to post yet.'))}</p>"
+    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No updates listed.'))}</p>"
 
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
@@ -2748,12 +2790,12 @@ def _window_label(certainty: str) -> str:
 
 def _status_label(score: float) -> str:
     if score >= 80:
-        return "Move Now"
+        return "Floor Consideration — Executive Session"
     if score >= 60:
-        return "Prepare"
+        return "Morning Business"
     if score >= 40:
-        return "Monitor"
-    return "Recess / Pro Forma Period"
+        return "Floor Consideration — Executive Session"
+    return "Pro Forma Period (no legislative business)"
 
 
 def procedural_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltItem], List[JoltItem]]:
@@ -2888,12 +2930,12 @@ def dashboard(
         else:
             vote_block = (forward_context.get("schedule_context", {}) or {}).get("vote_block", {})
             next_floor_date = vote_block.get("date_label")
-            ticker_status = f"Recess / Pro Forma Period — next floor activity {next_floor_date}" if next_floor_date else "Recess / Pro Forma Period"
+            ticker_status = f"Pro Forma Period (no legislative business) — next floor activity {next_floor_date}" if next_floor_date else "Pro Forma Period (no legislative business)"
             ticker_location = "No active coverage location"
             coverage_timing = "No active window"
             watch_list = "Leadership, EBB, committee schedule"
-            ticker_why = "No active floor or media-event trigger."
-            ticker_guidance = "Monitor floor updates, EBB postings, and committee schedules."
+            ticker_why = "No votes scheduled, and current public sources do not show active floor proceedings."
+            ticker_guidance = "No votes scheduled. No hearings scheduled. No media events listed."
 
         today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
