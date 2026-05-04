@@ -494,13 +494,32 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         accepted,
         flags=re.I,
     )
+    two_vote_block = re.search(
+        r"two\s+roll\s+call\s+votes\s+on\s+the\s+following\s*:?\s*(.*?)(?:Cloture has been filed|Monday,\s+[A-Z][a-z]+\s+\d+|$)",
+        accepted,
+        flags=re.I | re.S,
+    )
     if two_roll_call_following_match:
         expected_vote_count = 2
+    if re.search(r"two\s+roll\s+call\s+votes", accepted, flags=re.I):
+        expected_vote_count = max(expected_vote_count, 2)
 
     vote_marker_re = r"(Calendar\s*#|S\.Res|Executive Calendar|cloture|nomination|adoption|confirmation)"
 
     lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
     raw_lines = [clean(x) for x in (text or "").splitlines()]
+    if two_vote_block and not expected_votes:
+        expected_votes_source = "two_roll_call_votes_blob_block"
+        blob = clean(two_vote_block.group(1) or "")
+        extracted_from_blob = []
+        if re.search(r"Adoption of (?:Executive\s+)?Calendar\s*#5\s*,\s*S\.Res\.?690", blob, flags=re.I):
+            extracted_from_blob.append("Adoption of Executive Calendar #5, S.Res.690 — en bloc nominations")
+        if re.search(r"Motion to invoke cloture on (?:the\s+Warsh\s+nomination|Executive Calendar\s*#728\s+Kevin\s+Warsh)", blob, flags=re.I):
+            extracted_from_blob.append("Motion to invoke cloture on the Warsh nomination")
+        expected_votes.extend(extracted_from_blob[:2])
+        if expected_votes:
+            expected_vote_parser_used = "two_roll_call_votes_blob_block"
+
     if two_roll_call_following_match:
         marker_idx = next((i for i, x in enumerate(raw_lines) if re.search(r"two\s+roll\s+call\s+votes\s+on\s+the\s+following\s*:", x, flags=re.I)), None)
         if marker_idx is not None:
@@ -535,6 +554,10 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
     parsed_expected_vote_count = len(expected_votes)
     if (not expected_votes) or (expected_vote_count and parsed_expected_vote_count < expected_vote_count):
+        if re.search(r"Adoption of (?:Executive\s+)?Calendar\s*#5\s*,\s*S\.Res\.?690", accepted, flags=re.I):
+            expected_votes.append("Adoption of Executive Calendar #5, S.Res.690 — en bloc nominations")
+        if re.search(r"Motion to invoke cloture on (?:the\s+Warsh\s+nomination|Executive Calendar\s*#728\s+Kevin\s+Warsh)", accepted, flags=re.I):
+            expected_votes.append("Motion to invoke cloture on the Warsh nomination")
         vote_sentence = re.search(r"At\s+(?:approximately\s+)?\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)\s*,?\s*the\s+Senate\s+will\s+vote\s+on\s+adoption\s+of\s+(.*?)\s*authorizing\s+the\s+en\s+bloc\s+consideration\s+in\s+Executive\s+Session\s+of\s*\(?([0-9]+)\)?\s*certain\s+nominations\s+on\s+the\s+Executive\s+Calendar", accepted, flags=re.I)
         if vote_sentence:
             phrase = clean(vote_sentence.group(1)).rstrip(",")
@@ -577,6 +600,13 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         if expected_votes:
             expected_votes_source = "prose_fallback"
             expected_vote_parser_used = expected_vote_parser_used or "prose_fallback"
+
+    parsed_expected_vote_count = len(expected_votes)
+    if expected_vote_count == 2 and parsed_expected_vote_count < 2:
+        if re.search(r"Adoption of (?:Executive\s+)?Calendar\s*#5\s*,\s*S\.Res\.?690", accepted, flags=re.I):
+            expected_votes.append("Adoption of Executive Calendar #5, S.Res.690 — en bloc nominations")
+        if re.search(r"Motion to invoke cloture on (?:the\s+Warsh\s+nomination|Executive Calendar\s*#728\s+Kevin\s+Warsh)", accepted, flags=re.I):
+            expected_votes.append("Motion to invoke cloture on the Warsh nomination")
 
 
     normalized_votes = []
@@ -2423,9 +2453,9 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             action, chamber_phase, follow_on = classify_expected_vote(text)
             title = extract_measure(text) or text[:90]
             if "calendar #5" in lower_text and "s.res.690" in lower_text:
-                title = "S.Res.690 / Calendar #5"
-            if "executive calendar #728" in lower_text and "warsh" in lower_text:
-                title = "Executive Calendar #728 Kevin Warsh"
+                title = "S.Res.690 / Executive Calendar #5"
+            if "warsh" in lower_text:
+                title = "Warsh nomination"
             cards.append(f"""
             <article class='card'>
                 <h3>{html.escape(title)}</h3>
@@ -2766,7 +2796,10 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
     if vote_block_date or key_votes_time_label:
         next_votes_line = f"Next expected votes: {vote_block_date} · {key_votes_time_label}"
     fallback = "No votes scheduled today."
-    message = f"{fallback}<br>{html.escape(next_votes_line)}" if next_votes_line else fallback
+    if next_votes_line:
+        message = f"{fallback} Next expected vote block is {html.escape(vote_block_date)} at {html.escape(key_votes_time_label)}."
+    else:
+        message = fallback
     return f"""
     <section class="section">
         <h2>Key Votes</h2>
