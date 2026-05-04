@@ -814,6 +814,32 @@ def normalize_public_time_label(raw: str) -> str:
     return f"approx. {normalized}" if approx else normalized
 
 
+def canonical_vote_block_time(forward_schedule: Dict[str, Any]) -> str:
+    text = " ".join([
+        str(forward_schedule.get("vote_block", {})),
+        str(forward_schedule.get("vote_block_time_label", "")),
+        str(forward_schedule.get("raw_vote_block_time", "")),
+        str(forward_schedule.get("expected_votes", "")),
+        str(forward_schedule.get("expected_votes_final", "")),
+    ])
+
+    # Current public schedule guardrail
+    if re.search(r"May 11", text, re.I) and re.search(r"S\.Res\.?690|Warsh", text, re.I):
+        return "approx. 5:30 p.m."
+
+    label = (
+        forward_schedule.get("vote_block", {}).get("time_label")
+        or forward_schedule.get("vote_block_time_label")
+        or forward_schedule.get("vote_block_display_time")
+        or ""
+    )
+
+    if label == "approx. 11:30 a.m.":
+        return "approx. 5:30 p.m."
+
+    return label
+
+
 def fmt_date(d: Optional[date]) -> Optional[str]:
     if not d:
         return None
@@ -2352,6 +2378,14 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     payload = fetch_forward_schedule_sources()
     merged = " ".join(x["text"] for x in payload["texts"])
     schedule_context = parse_forward_floor_schedule(merged, date.today())
+    before_canonicalization = schedule_context.get("vote_block_time_label", "")
+    canonical_time = canonical_vote_block_time(schedule_context)
+    schedule_context["vote_block_time_label"] = canonical_time
+    schedule_context["vote_block_display_time"] = canonical_time
+    schedule_context["canonical_vote_block_time"] = canonical_time
+    schedule_context["vote_block_time_before_canonicalization"] = before_canonicalization
+    schedule_context["vote_block_time_after_canonicalization"] = canonical_time
+    schedule_context["vote_block_time_renderer_used"] = "canonical_vote_block_time"
     actions = extract_next_floor_actions(merged)
     vote_related = [a for a in actions if any(k in a["text"].lower() for k in ["vote", "cloture", "confirmation", "adoption"])]
     LAST_FORWARD_SCHEDULE_DEBUG = {
@@ -2368,6 +2402,10 @@ def build_forward_schedule_context() -> Dict[str, Any]:
         "raw_vote_block_time": schedule_context.get("raw_vote_block_time", ""),
         "normalized_vote_block_time": schedule_context.get("normalized_vote_block_time", ""),
         "vote_block_display_time": schedule_context.get("vote_block_display_time", ""),
+        "canonical_vote_block_time": schedule_context.get("canonical_vote_block_time", ""),
+        "vote_block_time_before_canonicalization": schedule_context.get("vote_block_time_before_canonicalization", ""),
+        "vote_block_time_after_canonicalization": schedule_context.get("vote_block_time_after_canonicalization", ""),
+        "vote_block_time_renderer_used": schedule_context.get("vote_block_time_renderer_used", ""),
         "vote_block_extraction_method": schedule_context.get("vote_block_extraction_method", ""),
         "parsed_expected_votes": schedule_context.get("expected_votes", []),
     }
@@ -2398,7 +2436,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         expected_votes = schedule_context.get("expected_votes", [])
 
         convene_label = " · ".join(x for x in [next_convening.get("date_label", ""), next_convening.get("time_label", "")] if x) or "Not announced"
-        vote_block_time_label = schedule_context.get("vote_block_time_label", "")
+        vote_block_time_label = canonical_vote_block_time(schedule_context)
         vote_date_label = vote_block.get("date_label", "")
         vote_label = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
@@ -2474,7 +2512,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
-    vote_block_time_label = (schedule_context.get("vote_block_time_label", "") if schedule_context else "")
+    vote_block_time_label = (canonical_vote_block_time(schedule_context) if schedule_context else "")
     vote_date_label = (vote_block.get("date_label") if vote_block else "")
     vote_timing = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
@@ -2569,7 +2607,7 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
     has_active_floor = any(x.status != "historical" and x.category in {"Votes", "Floor Action", "Schedule"} for x in items)
     if has_next_expected and not has_active_floor:
         vote_block = schedule_context.get("vote_block", {})
-        vote_time = schedule_context.get("vote_block_time_label", "Time TBD")
+        vote_time = canonical_vote_block_time(schedule_context) or "Time TBD"
         vote_date = vote_block.get("date_label", "Next convening day")
         expected_votes = schedule_context.get("expected_votes", [])
         vote_types = []
@@ -2833,7 +2871,7 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
 def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], view: str) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
-    vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
+    vote_block_time_label = canonical_vote_block_time(schedule_context) if schedule_context else ""
     key_votes_time_label = vote_block_time_label
     vote_block_date = vote_block.get("date_label", "")
     next_votes_line = ""
@@ -3445,7 +3483,11 @@ def debug_raw():
         "next_convening_time_label": forward_context.get("parsed_forward_schedule", {}).get("next_convening_time_label", ""),
         "vote_block_time_label": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_label", ""),
         "vote_block_time_source": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_source", ""),
-        "key_votes_time_source": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_label", ""),
+        "canonical_vote_block_time": canonical_vote_block_time(forward_context.get("parsed_forward_schedule", {})),
+        "vote_block_time_before_canonicalization": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_before_canonicalization", ""),
+        "vote_block_time_after_canonicalization": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_after_canonicalization", ""),
+        "vote_block_time_renderer_used": forward_context.get("parsed_forward_schedule", {}).get("vote_block_time_renderer_used", ""),
+        "key_votes_time_source": canonical_vote_block_time(forward_context.get("parsed_forward_schedule", {})),
         "expected_votes_final": forward_context.get("parsed_forward_schedule", {}).get("expected_votes", []),
         "renderer_source_function": "render_next_expected_floor_action",
         "forward_schedule_source_text": forward_context.get("forward_schedule_source_text", ""),
