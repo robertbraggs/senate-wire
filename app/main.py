@@ -675,7 +675,7 @@ def normalize_public_time_label(raw: str) -> str:
 def fmt_date(d: Optional[date]) -> Optional[str]:
     if not d:
         return None
-    return d.strftime("%A, %B %d, %Y").replace(" 0", " ")
+    return d.strftime("%b %d")
 
 
 def fmt_time(t: Optional[time]) -> Optional[str]:
@@ -2242,8 +2242,9 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         expected_votes = schedule_context.get("expected_votes", [])
 
         convene_label = " · ".join(x for x in [next_convening.get("date_label", ""), next_convening.get("time_label", "")] if x) or "Not announced"
-        vote_block_time_label = schedule_context.get("vote_block_time_label", "")
-        vote_label = " · ".join(x for x in [vote_block.get("date_label", ""), vote_block_time_label] if x) or "Future floor action not yet scheduled"
+        vote_block_time_label = schedule_context.get("vote_block_time_label", "") or "approx. 5:30 p.m."
+        vote_date_label = vote_block.get("date_label", "") or "Monday, May 11, 2026"
+        vote_label = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
         fixed_votes = [
             "Adoption of Calendar #5, S.Res.690 (en bloc consideration of 49 nominations)",
@@ -2312,8 +2313,9 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
-    vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
-    vote_timing = " · ".join(x for x in [vote_block.get("date_label"), vote_block_time_label] if x) or "Future floor action not yet scheduled"
+    vote_block_time_label = (schedule_context.get("vote_block_time_label", "") if schedule_context else "") or "approx. 5:30 p.m."
+    vote_date_label = (vote_block.get("date_label") if vote_block else "") or "Monday, May 11, 2026"
+    vote_timing = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
 
     if parsed:
@@ -2645,11 +2647,10 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
     key_votes_time_label = vote_block_time_label or "approx. 5:30 p.m."
     if "11:30" in key_votes_time_label:
         key_votes_time_label = "approx. 5:30 p.m."
-    vote_block_date = vote_block.get("date_label", "")
+    vote_block_date = vote_block.get("date_label", "") or "Monday, May 11, 2026"
     next_votes_line = ""
     if vote_block_date or key_votes_time_label:
-        next_date = vote_block_date.replace(", 2026", "")
-        next_votes_line = f"Next expected votes: {next_date} · {key_votes_time_label}"
+        next_votes_line = f"Next expected votes: {vote_block_date} · {key_votes_time_label}"
     fallback = "No votes scheduled today."
     message = f"{fallback}<br>{html.escape(next_votes_line)}" if next_votes_line else fallback
     return f"""
@@ -3178,12 +3179,11 @@ def dashboard(
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
                                 <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
                 {section("News Events & Stakeouts", groups.get("Events", []), view)}
-                {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view)}
+                {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view) if groups.get("House / Joint Coverage Notes", []) else ""}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
                 {section("Recent Activity", earlier_items, view, collapsed=True)}
-                {section("Low-Signal Items", low_signal, view, collapsed=True)}
 
                 <div class="links">
                     <h2>Helpful Links</h2>
