@@ -3078,7 +3078,7 @@ def dashboard(
 ):
     try:
         all_items = get_all_items()
-        items = filter_items(all_items, q, view, show_earlier=earlier)
+        items = filter_items(all_items, None, view, show_earlier=False)
         forward_context = build_forward_schedule_context()
         low_signal = [x for x in items if not any([x.time_label, x.location and x.location != "Location not parsed", x.senators_detected, x.measure, x.topic, x.action_line])]
         main_items = [x for x in items if x not in low_signal]
@@ -3375,17 +3375,6 @@ def dashboard(
             </header>
 
             <main>
-                <div class="searchbox">
-                    <form method="get">
-                        <input name="q" placeholder="Search senators, committees, topics, bills, or events" value="{html.escape(q or '')}">
-                        <button>Search</button>
-                    </form>
-                    <div class="views">
-                        <a href="/?earlier=true">Show Earlier Activity</a>
-                    </div>
-                </div>
-                {f"<p class='empty'>No matching JOLT items found. Try Senator, state, committee, room, bill number, vote, or topic.</p>" if q and not items else ""}
-
                 <div class="ticker">
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
