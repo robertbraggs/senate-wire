@@ -478,10 +478,17 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         vote_block_extraction_method = "pattern_a_fallback"
 
     cloture_filed = []
+    expected_vote_count = 0
+    parsed_expected_vote_count = 0
+    expected_vote_count_mismatch = False
     for m in re.finditer(r"cloture (?:has been )?filed on\s*(Executive Calendar\s*#\d+\s+[^.;]*)", accepted, flags=re.I):
         candidate = clean(m.group(1)).rstrip(".")
         if candidate:
             cloture_filed.append(candidate)
+    count_match = re.search(r"(\d+)\s+roll\s+call\s+votes\s+expected", accepted, flags=re.I)
+    if count_match:
+        expected_vote_count = int(count_match.group(1))
+
     if block_line:
         expected_votes_source = "structured_block"
         lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
@@ -497,15 +504,10 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
                 break
             if any(k in lower for k in ["leader remarks", "will next convene", "pro forma", "stands adjourned"]):
                 break
-            has_allowed_marker = any(k in s for k in ["Calendar #", "S.Res", "Executive Calendar"]) or any(
-                k in lower for k in ["nomination", "cloture on executive calendar"]
-            )
-            if (not has_allowed_marker or
-                lower.startswith("no earlier than") or
-                s[:1].islower() or
-                len(s.split()) < 8):
-                continue
-            if not re.search(r"(Calendar\s*#|S\.Res|Executive Calendar|nomination|cloture)", s, flags=re.I):
+            if (
+                lower.startswith("no earlier than")
+                or not re.search(r"(Calendar\s*#|S\.Res|Executive Calendar|cloture|nomination|adoption|confirmation)", s, flags=re.I)
+            ):
                 continue
             if s.lower().startswith("adoption of"):
                 s = s[0].upper() + s[1:]
@@ -515,7 +517,8 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
                 seen_votes.add(k)
                 expected_votes.append(s)
 
-    if not expected_votes:
+    parsed_expected_vote_count = len(expected_votes)
+    if (not expected_votes) or (expected_vote_count and parsed_expected_vote_count < expected_vote_count):
         vote_sentence = re.search(r"At\s+(?:approximately\s+)?\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)\s*,?\s*the\s+Senate\s+will\s+vote\s+on\s+adoption\s+of\s+(.*?)\s*authorizing\s+the\s+en\s+bloc\s+consideration\s+in\s+Executive\s+Session\s+of\s*\(?([0-9]+)\)?\s*certain\s+nominations\s+on\s+the\s+Executive\s+Calendar", accepted, flags=re.I)
         if vote_sentence:
             phrase = clean(vote_sentence.group(1)).rstrip(",")
@@ -525,6 +528,28 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         cloture_sentence = re.search(r"Following disposition of the resolution,\s*the Senate will vote on the motion to invoke cloture on\s+([^.]*)\.", accepted, flags=re.I)
         if cloture_sentence:
             ec = clean(cloture_sentence.group(1))
+            expected_votes.append(f"Motion to invoke cloture on {ec} nomination")
+
+        generic_adoption = re.search(
+            r"Adoption of\s+(Calendar\s*#\d+\s*,?\s*S\.Res\.?\d+)(?:[^\n]*?of\s*(\d+)\s*nominations)?",
+            accepted,
+            flags=re.I,
+        )
+        if generic_adoption:
+            cal = clean(generic_adoption.group(1)).replace(" ,", ",")
+            c = generic_adoption.group(2)
+            if c:
+                expected_votes.append(f"Adoption of {cal} (en bloc consideration of {c} nominations)")
+            else:
+                expected_votes.append(f"Adoption of {cal}")
+
+        generic_cloture = re.search(
+            r"motion to invoke cloture on\s+(Executive Calendar\s*#\d+\s+[^.\n]*?)(?:\s+nomination)?[.\n]",
+            accepted,
+            flags=re.I,
+        )
+        if generic_cloture:
+            ec = clean(generic_cloture.group(1))
             expected_votes.append(f"Motion to invoke cloture on {ec} nomination")
 
         if pattern_a:
@@ -540,7 +565,18 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         if expected_votes:
             expected_votes_source = "prose_fallback"
 
+
+    expected_votes = [
+        v for v in expected_votes
+        if clean(v)
+        and clean(v).lower() not in {"none announced", "no vote block announced"}
+        and clean(v).lower() not in {"the motion to invoke cloture", "confirmation of"}
+    ]
+
     expected_votes = list(dict.fromkeys(expected_votes))
+    parsed_expected_vote_count = len(expected_votes)
+    if expected_vote_count and parsed_expected_vote_count < expected_vote_count:
+        expected_vote_count_mismatch = True
     if "5:30pm" in accepted.lower() and vote_block.get("time_label") == "11:30 a.m.":
         vote_block["time_label"] = "approx. 5:30 p.m."
 
@@ -561,6 +597,9 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "vote_block_display_time": vote_block.get("time_label", ""),
         "vote_block_extraction_method": vote_block_extraction_method,
         "expected_votes_source": expected_votes_source,
+        "expected_vote_count": expected_vote_count,
+        "parsed_expected_vote_count": parsed_expected_vote_count,
+        "expected_vote_count_mismatch": expected_vote_count_mismatch,
         "raw_vote_time_match": raw_vote_block_time,
         "expected_votes_final": expected_votes[:8],
         "renderer_source_function": "parse_forward_floor_schedule",
