@@ -387,8 +387,13 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     ):
         snippet = clean(m.group(0))
         context_window = accepted[max(0, m.start() - 120): min(len(accepted), m.end() + 120)].lower()
+        sentence_start = accepted.rfind(".", 0, m.start()) + 1
+        sentence_end = accepted.find(".", m.end())
+        if sentence_end == -1:
+            sentence_end = len(accepted)
+        sentence_text = accepted[sentence_start:sentence_end].lower()
 
-        if "pro forma" not in context_window:
+        if "pro forma" not in context_window and "pro forma" not in sentence_text:
             continue
 
         d = parse_schedule_date(snippet)
@@ -435,6 +440,15 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
                 "sort_datetime": sort_dt(d, t),
                 "date_obj": d,
             }
+
+    if next_convening:
+        next_key = (next_convening.get("date", ""), next_convening.get("time", ""))
+        pro_formas = [
+            p for p in pro_formas
+            if (p.get("date", ""), p.get("time", "")) != next_key
+        ]
+
+    pro_formas.sort(key=lambda x: (x.get("sort_datetime") is None, x.get("sort_datetime") or "9999-99-99T99:99:99"))
 
     floor_schedule = []
 
