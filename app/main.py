@@ -1970,7 +1970,7 @@ def get_all_items() -> List[JoltItem]:
         elif item.category == "Remarks":
             item.action_line = "Monitor for hallway follow-up if tied to active floor business."
         else:
-            item.action_line = clean(item.movement_cue) or "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities."
+            item.action_line = clean(item.movement_cue) or "Monitor for new floor activity, EBB postings, and committee schedule updates."
         enrich_public_fields(item)
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
@@ -2523,7 +2523,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             if "motion to invoke cloture" in lower_text or "cloture" in lower_text:
                 return "Cloture vote (limits debate)", "Floor Consideration — Executive Session", "If cloture is invoked, debate time is limited and the Senate moves toward confirmation."
             if "adoption of resolution" in lower_text or "adoption" in lower_text:
-                return "Adoption vote (procedural)", "Morning Business", "Adoption establishes procedural terms that set up subsequent nomination or floor consideration."
+                return "Adoption vote (procedural)", "Floor Consideration — Executive Session", "Adoption establishes procedural terms that set up subsequent nomination or floor consideration."
             if "confirmation" in lower_text:
                 return "Confirmation vote (final action)", "Floor Consideration — Executive Session", "After confirmation, the nomination is finally disposed and the Senate proceeds to the next item."
             if "passage" in lower_text:
@@ -2718,7 +2718,7 @@ def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
     return {
         "where_to_be_now": "No active coverage location",
         "movement": "Monitor",
-        "watch": "No votes scheduled; no active floor trigger is listed in current public schedule sources.",
+        "watch": "No votes scheduled today; next vote block is May 11 at approx. 5:30 p.m.",
     }
 
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
@@ -2838,7 +2838,7 @@ def empty_message(title: str) -> str:
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
-    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No updates listed.'))}</p>"
+    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No floor activity reported'))}</p>"
 
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
@@ -2978,7 +2978,7 @@ def _status_label(score: float) -> str:
     if score >= 80:
         return "Floor Consideration — Executive Session"
     if score >= 60:
-        return "Morning Business"
+        return "Floor Consideration — Executive Session"
     if score >= 40:
         return "Floor Consideration — Executive Session"
     return "Pro Forma Period (no legislative business)"
@@ -3106,13 +3106,16 @@ def dashboard(
         top_banner = movement_banner(items)
         signals = to_signal_items(items) if items else []
         top_signal = signals[0] if signals else None
+        schedule_context = (forward_context.get("schedule_context", {}) if forward_context else {})
+        expected_votes = schedule_context.get("expected_votes", []) if schedule_context else []
+        active_signal_count = (1 if schedule_context.get("next_convening") else 0) + (1 if schedule_context.get("vote_block") else 0) + len(expected_votes)
         coverage_timing = "Expected" if next_items else "No active window"
         watch_list = ", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule"
         if top_signal:
             ticker_status = _status_label(top_signal.total_score)
             ticker_location = top_banner.get("where_to_be_now") or "No active coverage location"
             ticker_why = top_banner.get("watch") or "Floor, event, or committee updates may drive coverage."
-            ticker_guidance = next_items[0].action_line if next_items else "Monitor floor updates, EBB postings, and committee schedules for developing coverage opportunities."
+            ticker_guidance = next_items[0].action_line if next_items else "Monitor for new floor activity, EBB postings, and committee schedule updates."
         else:
             vote_block = (forward_context.get("schedule_context", {}) or {}).get("vote_block", {})
             next_floor_date = vote_block.get("date_label")
@@ -3121,7 +3124,7 @@ def dashboard(
             coverage_timing = "No active window"
             watch_list = "Leadership, EBB, committee schedule"
             ticker_why = "No votes scheduled, and current public sources do not show active floor proceedings."
-            ticker_guidance = "No votes scheduled. No hearings scheduled. No media events listed."
+            ticker_guidance = "Monitor for new floor activity, EBB postings, and committee schedule updates."
 
         today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
@@ -3383,7 +3386,7 @@ def dashboard(
                 </div>
 
                 <div class="summary">
-                    <div class="stat"><b>{len([x for x in signals if x.total_score > 40]) if len([x for x in signals if x.total_score > 40]) >= 2 else "—"}</b>Active Signals</div>
+                    <div class="stat"><b>{active_signal_count if active_signal_count > 0 else "—"}</b>Active Signals</div>
                     <div class="stat"><b>{len(groups.get("Votes", []))}</b>Votes</div>
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
                 </div>
