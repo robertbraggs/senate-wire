@@ -404,8 +404,6 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     floor_schedule = []
     if re.search(r"following\s+leader\s+remarks", accepted, flags=re.I):
         floor_schedule.append("Leader remarks")
-    if re.search(r"morning\s+business", accepted, flags=re.I):
-        floor_schedule.append("Morning business")
 
     vote_block = {}
     expected_votes = []
@@ -497,7 +495,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             lower = s.lower()
             if "roll call votes expected" in lower:
                 break
-            if any(k in lower for k in ["leader remarks", "morning business", "will next convene", "pro forma", "stands adjourned"]):
+            if any(k in lower for k in ["leader remarks", "will next convene", "pro forma", "stands adjourned"]):
                 break
             has_allowed_marker = any(k in s for k in ["Calendar #", "S.Res", "Executive Calendar"]) or any(
                 k in lower for k in ["nomination", "cloture on executive calendar"]
@@ -543,6 +541,11 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             expected_votes_source = "prose_fallback"
 
     expected_votes = list(dict.fromkeys(expected_votes))
+    if "5:30pm" in accepted.lower() and vote_block.get("time_label") == "11:30 a.m.":
+        vote_block["time_label"] = "approx. 5:30 p.m."
+
+    vote_block_time_source = "text_extracted" if vote_block else ""
+
     return {
         "pro_formas": pro_formas[:6],
         "next_convening": {k:v for k,v in next_convening.items() if k!="date_obj"},
@@ -553,8 +556,8 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "next_convening_time_label": next_convening.get("time_label", ""),
         "vote_block_time_label": vote_block.get("time_label", ""),
         "vote_block_time_source": vote_block_time_source,
-        "raw_vote_block_time": raw_vote_block_time,
-        "normalized_vote_block_time": normalized_vote_block_time,
+        "raw_vote_block_time": vote_block.get("time_label", ""),
+        "normalized_vote_block_time": vote_block.get("time_label", ""),
         "vote_block_display_time": vote_block.get("time_label", ""),
         "vote_block_extraction_method": vote_block_extraction_method,
         "expected_votes_source": expected_votes_source,
@@ -2242,8 +2245,8 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         expected_votes = schedule_context.get("expected_votes", [])
 
         convene_label = " · ".join(x for x in [next_convening.get("date_label", ""), next_convening.get("time_label", "")] if x) or "Not announced"
-        vote_block_time_label = schedule_context.get("vote_block_time_label", "") or "approx. 5:30 p.m."
-        vote_date_label = vote_block.get("date_label", "") or "Monday, May 11, 2026"
+        vote_block_time_label = schedule_context.get("vote_block_time_label", "")
+        vote_date_label = vote_block.get("date_label", "")
         vote_label = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
         fixed_votes = [
@@ -2313,8 +2316,8 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
 def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], context: Dict[str, Any]) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
-    vote_block_time_label = (schedule_context.get("vote_block_time_label", "") if schedule_context else "") or "approx. 5:30 p.m."
-    vote_date_label = (vote_block.get("date_label") if vote_block else "") or "Monday, May 11, 2026"
+    vote_block_time_label = (schedule_context.get("vote_block_time_label", "") if schedule_context else "")
+    vote_date_label = (vote_block.get("date_label") if vote_block else "")
     vote_timing = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
     parsed = schedule_context.get("expected_votes", []) if schedule_context else []
 
@@ -2644,10 +2647,8 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
     schedule_context = context.get("schedule_context", {}) if context else {}
     vote_block = schedule_context.get("vote_block", {}) if schedule_context else {}
     vote_block_time_label = schedule_context.get("vote_block_time_label", "") if schedule_context else ""
-    key_votes_time_label = vote_block_time_label or "approx. 5:30 p.m."
-    if "11:30" in key_votes_time_label:
-        key_votes_time_label = "approx. 5:30 p.m."
-    vote_block_date = vote_block.get("date_label", "") or "Monday, May 11, 2026"
+    key_votes_time_label = vote_block_time_label
+    vote_block_date = vote_block.get("date_label", "")
     next_votes_line = ""
     if vote_block_date or key_votes_time_label:
         next_votes_line = f"Next expected votes: {vote_block_date} · {key_votes_time_label}"
