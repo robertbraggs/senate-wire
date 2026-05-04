@@ -408,6 +408,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     vote_block = {}
     expected_votes = []
     expected_votes_source = ""
+    expected_vote_parser_used = ""
     vote_block_time_source = ""
     vote_block_extraction_method = ""
     raw_vote_block_time = ""
@@ -488,12 +489,28 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     count_match = re.search(r"(\d+)\s+roll\s+call\s+votes\s+expected", accepted, flags=re.I)
     if count_match:
         expected_vote_count = int(count_match.group(1))
+    two_roll_call_following_match = re.search(
+        r"At\s+\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)\s*,?\s*the\s+Senate\s+will\s+proceed\s+to\s+two\s+roll\s+call\s+votes\s+on\s+the\s+following\s*:",
+        accepted,
+        flags=re.I,
+    )
+    if two_roll_call_following_match:
+        expected_vote_count = 2
 
     vote_marker_re = r"(Calendar\s*#|S\.Res|Executive Calendar|cloture|nomination|adoption|confirmation)"
 
-    if block_line:
+    lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
+    raw_lines = [clean(x) for x in (text or "").splitlines()]
+    if two_roll_call_following_match:
+        marker_idx = next((i for i, x in enumerate(raw_lines) if re.search(r"two\s+roll\s+call\s+votes\s+on\s+the\s+following\s*:", x, flags=re.I)), None)
+        if marker_idx is not None:
+            following = [clean(x.strip(" -•\t")) for x in raw_lines[marker_idx + 1:] if clean(x.strip(" -•\t"))]
+            expected_votes = following[:2]
+            expected_votes_source = "two_roll_call_votes_following_block"
+            expected_vote_parser_used = "two_roll_call_votes_following_block"
+            parsed_expected_vote_count = len(expected_votes)
+    if block_line and not expected_votes:
         expected_votes_source = "structured_block"
-        lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
         start_idx = next((i for i, x in enumerate(lines) if block_line in x or x in block_line), None)
         candidate_lines = lines[start_idx + 1:] if start_idx is not None else []
         seen_votes = set()
@@ -559,7 +576,17 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
         if expected_votes:
             expected_votes_source = "prose_fallback"
+            expected_vote_parser_used = expected_vote_parser_used or "prose_fallback"
 
+
+    normalized_votes = []
+    for v in expected_votes:
+        s = clean(v).rstrip(".")
+        s = re.sub(r",\s*En\s+Bloc\s+Nominations$", " — en bloc nominations", s, flags=re.I)
+        s = re.sub(r"\s+", " ", s).strip()
+        if s:
+            normalized_votes.append(s)
+    expected_votes = normalized_votes
 
     expected_votes = [
         v for v in expected_votes
@@ -571,6 +598,8 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
 
     expected_votes = list(dict.fromkeys(expected_votes))
     parsed_expected_vote_count = len(expected_votes)
+    if expected_votes and not expected_vote_parser_used:
+        expected_vote_parser_used = expected_votes_source or "structured_block"
     if expected_vote_count and parsed_expected_vote_count < expected_vote_count:
         expected_vote_count_mismatch = True
     if "5:30pm" in accepted.lower() and vote_block.get("time_label") == "11:30 a.m.":
@@ -593,6 +622,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "vote_block_display_time": vote_block.get("time_label", ""),
         "vote_block_extraction_method": vote_block_extraction_method,
         "expected_votes_source": expected_votes_source,
+        "expected_vote_parser_used": expected_vote_parser_used,
         "expected_vote_count": expected_vote_count,
         "parsed_expected_vote_count": parsed_expected_vote_count,
         "expected_vote_count_mismatch": expected_vote_count_mismatch,
