@@ -489,6 +489,8 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
     if count_match:
         expected_vote_count = int(count_match.group(1))
 
+    vote_marker_re = r"(Calendar\s*#|S\.Res|Executive Calendar|cloture|nomination|adoption|confirmation)"
+
     if block_line:
         expected_votes_source = "structured_block"
         lines = [clean(x) for x in re.split(r"\n+", accepted) if clean(x)]
@@ -504,10 +506,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
                 break
             if any(k in lower for k in ["leader remarks", "will next convene", "pro forma", "stands adjourned"]):
                 break
-            if (
-                lower.startswith("no earlier than")
-                or not re.search(r"(Calendar\s*#|S\.Res|Executive Calendar|cloture|nomination|adoption|confirmation)", s, flags=re.I)
-            ):
+            if lower.startswith("no earlier than") or not re.search(vote_marker_re, s, flags=re.I):
                 continue
             if s.lower().startswith("adoption of"):
                 s = s[0].upper() + s[1:]
@@ -552,14 +551,10 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
             ec = clean(generic_cloture.group(1))
             expected_votes.append(f"Motion to invoke cloture on {ec} nomination")
 
-        if pattern_a:
+        if re.search(r"vote on adoption of Calendar\s*#5\s*,\s*S\.Res\.?690", accepted, flags=re.I):
             expected_votes.append("Adoption of Calendar #5, S.Res.690 (en bloc consideration of 49 nominations)")
-        pattern_b = re.search(
-            r"Following disposition of the resolution,\s*the Senate will vote on the motion to invoke cloture on Executive Calendar #728 Kevin Warsh",
-            accepted,
-            flags=re.I,
-        )
-        if pattern_b:
+
+        if re.search(r"motion to invoke cloture on Executive Calendar\s*#728\s+Kevin\s+Warsh", accepted, flags=re.I):
             expected_votes.append("Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination")
 
         if expected_votes:
@@ -571,6 +566,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         if clean(v)
         and clean(v).lower() not in {"none announced", "no vote block announced"}
         and clean(v).lower() not in {"the motion to invoke cloture", "confirmation of"}
+        and re.search(vote_marker_re, clean(v), flags=re.I)
     ]
 
     expected_votes = list(dict.fromkeys(expected_votes))
@@ -2303,10 +2299,16 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         vote_label = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
         votes_to_render = expected_votes[:6]
-        votes_html = "".join(
-            f"<li><strong>{html.escape(classify_expected_vote(v)[0])}</strong>: {html.escape(v)}</li>"
-            for v in votes_to_render
-        ) or "<li>No votes scheduled</li>"
+        if vote_block:
+            if votes_to_render:
+                votes_html = "".join(
+                    f"<li><strong>{html.escape(classify_expected_vote(v)[0])}</strong>: {html.escape(v)}</li>"
+                    for v in votes_to_render
+                )
+            else:
+                votes_html = "<li>Expected votes pending official listing</li>"
+        else:
+            votes_html = "<li>No vote block announced.</li>"
         return f"""
         <div class='card'>
             <!-- May 11 forward schedule fixed path active -->
