@@ -4,11 +4,13 @@ from typing import Optional, List, Dict, Tuple, Any
 import re
 import html
 import os
+from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from functools import lru_cache
+from fastapi.staticfiles import StaticFiles
 
 
 APP_NAME = "The Senate JOLT"
@@ -22,6 +24,18 @@ FLOOR_ACTIVITY_URL = "https://www.senate.gov/legislative/floor_activity_pail.htm
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 
 app = FastAPI(title=APP_NAME, version="8.0.0")
+BASE_DIR = Path(__file__).resolve().parent.parent
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+
+@app.get("/manifest.json", include_in_schema=False)
+def manifest():
+    return FileResponse(BASE_DIR / "manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/service-worker.js", include_in_schema=False)
+def service_worker():
+    return FileResponse(BASE_DIR / "service-worker.js", media_type="application/javascript")
 
 
 COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly/2026/04/27?q=%7B%22chamber%22%3A%22Senate%22%7D"
@@ -3156,7 +3170,12 @@ def dashboard(
         <html>
         <head>
             <title>{APP_NAME}</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+            <meta name="apple-mobile-web-app-capable" content="yes">
+            <meta name="apple-mobile-web-app-title" content="Senate JOLT">
+            <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+            <meta name="theme-color" content="#172554">
+            <link rel="manifest" href="/manifest.json">
             <meta http-equiv="refresh" content="60">
             <style>
                 body {{
@@ -3427,6 +3446,13 @@ def dashboard(
                 </div>
                 <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
+            <script>
+                if ("serviceWorker" in navigator) {{
+                    window.addEventListener("load", () => {{
+                        navigator.serviceWorker.register("/service-worker.js");
+                    }});
+                }}
+            </script>
         </body>
         </html>
         """
