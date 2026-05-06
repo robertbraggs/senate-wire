@@ -26,3 +26,5 @@ PRESENTED_PRESIDENT,Presented to President,Executive,Presidential action,ENROLLE
 SIGNED_PRESIDENT,Signed by President,Executive,Enactment,PRESENTED_PRESIDENT,,The President has signed the measure; it becomes law.
 VETOED,Vetoed,Executive,Presidential action,PRESENTED_PRESIDENT,VETO_OVERRIDE,The President has rejected the measure and returned it or issued a veto message.
 VETO_OVERRIDE,Veto override,Congress,Presidential action,VETOED,SIGNED_PRESIDENT,The chamber is attempting or has completed a constitutionally required two-thirds override vote.
+QUORUM_CALL,Quorum call,Senate,Floor timing,,RECESS|VOTE_SCHEDULED|MOTION_TO_PROCEED,"A quorum call is often a holding pattern or timing device; by itself it is procedural noise unless paired with another action."
+RECESS,Recess,Senate,Floor timing,,MOTION_TO_PROCEED|VOTE_SCHEDULED,"A recess pauses floor proceedings; by itself it is routine timing information unless paired with a vote or leadership announcement."
