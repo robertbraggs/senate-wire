@@ -315,20 +315,42 @@ def test_previous_day_item_is_excluded_from_recent_activity():
     assert previous_item not in current
 
 
-def test_previous_day_item_appears_only_as_last_known_context():
+def test_previous_day_item_is_not_shown_as_context_without_current_relevance():
     now = datetime(2026, 5, 6, 15, 0)
     previous_item = make_activity_item("Senate adjourned", "2026-05-05T18:00:00")
 
     current, prior = main.recent_activity_buckets([previous_item], now)
-    rendered = main.render_last_known_context_section(prior, "reporter")
 
     assert current == []
-    assert prior == [previous_item]
-    assert "Last Known Context" in rendered
-    assert "Showing the latest available prior update for context." in rendered
+    assert prior == []
 
 
-def test_empty_current_state_message_appears_when_nothing_current_exists():
-    rendered = main.section("Recent Activity", [], "reporter", collapsed=True)
+def test_unresolved_prior_procedure_can_be_shown_as_material_carryover():
+    now = datetime(2026, 5, 6, 15, 0)
+    carryover_item = make_activity_item("Cloture filed on nomination", "2026-05-05T18:00:00")
+    carryover_item.action_line = "Cloture filed on the nomination."
 
-    assert "No current Senate floor activity detected." in rendered
+    current, prior = main.recent_activity_buckets([carryover_item], now)
+    rendered = main.render_material_context_section(prior, "reporter")
+
+    assert current == []
+    assert prior == [carryover_item]
+    assert "Procedural Carryover" in rendered
+    assert "may affect the next coverage window" in rendered
+
+
+def test_empty_current_state_message_uses_operational_language():
+    rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True)
+
+    assert "No current Senate floor movement." in rendered
+    assert "Earlier item. Keep for context only." not in rendered
+
+
+def test_operational_copy_generation_uses_coverage_window_language():
+    rendered = main.render_key_votes_section([], {"schedule_context": {"vote_block": {"date_label": "Monday, May 11", "time_label": "approx. 5:30 p.m."}}}, "reporter")
+    outlook = main.coverage_outlook([], {})
+    news_empty = main.empty_message("News Events & Stakeouts")
+
+    assert "Next expected vote window" in rendered
+    assert "No scheduled press events detected." in outlook
+    assert "No scheduled press events detected." in news_empty
