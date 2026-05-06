@@ -3467,18 +3467,33 @@ def dashboard(
             <meta name="apple-mobile-web-app-capable" content="yes">
             <meta name="apple-mobile-web-app-title" content="Senate JOLT">
             <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-            <meta name="theme-color" content="#111827">
+            <meta name="theme-color" content="#12355B">
             <link rel="manifest" href="/static/manifest.json">
             <style>
+                /*
+                COLOR LOCK:
+                Senate JOLT uses Senate Radio-TV Gallery-inspired colors.
+                Do not alter color values unless explicitly requested.
+                */
+                :root {{
+                    --color-primary-navy: #12355B;
+                    --color-deep-senate-navy: #0B1F33;
+                    --color-accent-blue: #1D5D9B;
+                    --color-light-background: #F5F7FA;
+                    --color-card-background: #FFFFFF;
+                    --color-border-gray: #D7DEE8;
+                    --color-text-primary: #1F2933;
+                    --color-text-muted: #5F6B7A;
+                }}
                 body {{
                     margin: 0;
-                    background: #f4f6fb;
-                    color: #172033;
+                    background: var(--color-light-background);
+                    color: var(--color-text-primary);
                     font-family: Arial, sans-serif;
                 }}
                 header {{
-                    background: linear-gradient(135deg, #172554, #1e3a8a);
-                    color: white;
+                    background: var(--color-primary-navy);
+                    color: var(--color-card-background);
                     padding: 24px 16px;
                 }}
                 .wrap, main {{
@@ -3498,9 +3513,9 @@ def dashboard(
                     line-height: 1.35;
                 }}
                 .searchbox, .card, .stat, .panel, .links, .status, .outlook {{
-                    background: white;
+                    background: var(--color-card-background);
                     border-radius: 16px;
-                    border: 1px solid #e5e7eb;
+                    border: 1px solid var(--color-border-gray);
                     box-shadow: 0 2px 8px rgba(15,23,42,.07);
                 }}
                 .searchbox, .status, .outlook {{
@@ -3515,12 +3530,12 @@ def dashboard(
                 input, button {{
                     padding: 12px;
                     border-radius: 10px;
-                    border: 1px solid #cbd5e1;
+                    border: 1px solid var(--color-border-gray);
                     font-size: 15px;
                 }}
                 button {{
-                    background: #172554;
-                    color: white;
+                    background: var(--color-primary-navy);
+                    color: var(--color-card-background);
                     border: 0;
                     font-weight: bold;
                 }}
@@ -3532,16 +3547,16 @@ def dashboard(
                 }}
                 .views a {{
                     text-decoration: none;
-                    color: #172554;
-                    background: #eef2ff;
+                    color: var(--color-primary-navy);
+                    background: var(--color-light-background);
                     padding: 9px 12px;
                     border-radius: 999px;
                     font-weight: bold;
                     white-space: nowrap;
                 }}
                 .ticker {{
-                    background: #0f172a;
-                    color: white;
+                    background: var(--color-deep-senate-navy);
+                    color: var(--color-card-background);
                     border-radius: 16px;
                     padding: 12px;
                     margin-bottom: 14px;
@@ -3559,7 +3574,7 @@ def dashboard(
                 .stat b {{
                     display: block;
                     font-size: 26px;
-                    color: #172554;
+                    color: var(--color-primary-navy);
                 }}
                 .topgrid {{
                     display: grid;
@@ -3568,14 +3583,15 @@ def dashboard(
                 }}
                 .panel {{
                     padding: 14px;
-                    background: #eef2ff;
-                    border-color: #c7d2fe;
+                    background: var(--color-light-background);
+                    border-color: var(--color-border-gray);
                 }}
                 .section {{
                     margin: 24px 0;
                 }}
                 .section h2 {{
-                    border-bottom: 2px solid #cbd5e1;
+                    color: var(--color-primary-navy);
+                    border-bottom: 2px solid var(--color-border-gray);
                     padding-bottom: 8px;
                     font-size: 21px;
                 }}
@@ -3597,7 +3613,7 @@ def dashboard(
                     align-items: center;
                 }}
                 .badge {{
-                    color: white;
+                    color: var(--color-card-background);
                     border-radius: 999px;
                     padding: 6px 10px;
                     text-transform: uppercase;
@@ -3605,12 +3621,12 @@ def dashboard(
                     font-weight: bold;
                     letter-spacing: .04em;
                 }}
-                .red {{ background: #dc2626; }}
-                .orange {{ background: #f97316; }}
-                .blue {{ background: #2563eb; }}
-                .gray {{ background: #64748b; }}
+                .red {{ background: var(--color-deep-senate-navy); }}
+                .orange {{ background: var(--color-accent-blue); }}
+                .blue {{ background: var(--color-accent-blue); }}
+                .gray {{ background: var(--color-text-muted); }}
                 .meta {{
-                    color: #64748b;
+                    color: var(--color-text-muted);
                     font-size: 12px;
                     text-transform: uppercase;
                 }}
@@ -3619,14 +3635,14 @@ def dashboard(
                     font-size: 20px;
                 }}
                 .when {{
-                    color: #334155;
+                    color: var(--color-text-primary);
                     font-weight: bold;
                     margin-bottom: 8px;
                 }}
                 .pill {{
                     display: inline-block;
-                    background: #eef2ff;
-                    color: #1e3a8a;
+                    background: var(--color-light-background);
+                    color: var(--color-primary-navy);
                     padding: 6px 10px;
                     border-radius: 999px;
                     font-size: 13px;
@@ -3637,8 +3653,8 @@ def dashboard(
                     line-height: 1.45;
                 }}
                 .logistics {{
-                    background: #f8fafc;
-                    border-left: 4px solid #2563eb;
+                    background: var(--color-light-background);
+                    border-left: 4px solid var(--color-accent-blue);
                     padding: 10px 12px;
                     border-radius: 10px;
                     line-height: 1.5;
@@ -3646,7 +3662,7 @@ def dashboard(
                 .source {{
                     display: inline-block;
                     margin: 10px 10px 0 0;
-                    color: #1d4ed8;
+                    color: var(--color-accent-blue);
                     font-weight: bold;
                 }}
                 .source-links {{
@@ -3662,63 +3678,63 @@ def dashboard(
                 .links a {{
                     display: block;
                     margin: 8px 0;
-                    color: #1d4ed8;
+                    color: var(--color-accent-blue);
                     font-weight: bold;
-                    background: #eef2ff;
+                    background: var(--color-light-background);
                     padding: 8px 10px;
                     border-radius: 10px;
                     text-decoration: none;
                 }}
                 .empty {{
-                    background: white;
+                    background: var(--color-card-background);
                     border-radius: 12px;
                     padding: 14px;
-                    color: #64748b;
+                    color: var(--color-text-muted);
                 }}
 
                 *, *::before, *::after {{ box-sizing: border-box; }}
                 html {{ -webkit-text-size-adjust: 100%; }}
                 body {{ overflow-x: hidden; }}
                 a, button, summary {{ touch-action: manipulation; }}
-                .app-header {{ position: sticky; top: 0; z-index: 20; background: #111827; padding: max(14px, env(safe-area-inset-top)) 16px 14px; box-shadow: 0 8px 24px rgba(15, 23, 42, .22); }}
+                .app-header {{ position: sticky; top: 0; z-index: 20; background: var(--color-primary-navy); padding: max(14px, env(safe-area-inset-top)) 16px 14px; box-shadow: 0 8px 24px rgba(15, 23, 42, .22); }}
                 .live-controls {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }}
-                .button {{ min-height: 44px; border: 0; border-radius: 999px; padding: 11px 16px; background: #ffffff; color: #111827; font-weight: 800; cursor: pointer; }}
-                .button.secondary {{ background: #fbbf24; color: #111827; }}
+                .button {{ min-height: 44px; border: 0; border-radius: 999px; padding: 11px 16px; background: var(--color-primary-navy); color: var(--color-card-background); font-weight: 800; cursor: pointer; }}
+                .button.secondary {{ background: var(--color-primary-navy); color: var(--color-card-background); }}
                 .last-updated {{ font-size: 14px; opacity: .95; }}
-                .alert-banner {{ position: sticky; top: 0; z-index: 30; display: grid; gap: 4px; padding: 12px 16px; background: #b91c1c; color: #fff; box-shadow: 0 8px 20px rgba(127, 29, 29, .25); }}
+                .alert-banner {{ position: sticky; top: 0; z-index: 30; display: grid; gap: 4px; padding: 12px 16px; background: var(--color-deep-senate-navy); color: var(--color-card-background); box-shadow: 0 8px 20px rgba(15, 23, 42, .22); }}
                 .alert-banner strong {{ font-size: 17px; }}
-                .offline-warning {{ margin-bottom: 12px; padding: 12px 14px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 14px; color: #78350f; font-weight: 700; }}
+                .offline-warning {{ margin-bottom: 12px; padding: 12px 14px; background: var(--color-light-background); border: 1px solid var(--color-border-gray); border-radius: 14px; color: var(--color-text-muted); font-weight: 700; }}
                 main {{ scroll-margin-top: 90px; }}
                 .ticker {{ font-size: 18px; line-height: 1.55; }}
                 .section {{ margin-top: 18px; }}
                 .card, .stat, .outlook, .links, .ticker, .empty {{ overflow-wrap: anywhere; }}
                 .summary, .topgrid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
                 .links {{ display: grid; gap: 10px; }}
-                .link-group {{ border: 1px solid #dbe3ef; border-radius: 14px; background: #fff; overflow: hidden; }}
-                .link-group summary {{ min-height: 48px; padding: 14px 16px; cursor: pointer; font-weight: 800; color: #111827; list-style-position: inside; }}
+                .link-group {{ border: 1px solid var(--color-border-gray); border-radius: 14px; background: var(--color-card-background); overflow: hidden; }}
+                .link-group summary {{ min-height: 48px; padding: 14px 16px; cursor: pointer; font-weight: 800; color: var(--color-primary-navy); list-style-position: inside; }}
                 .link-group a {{ min-height: 44px; margin: 0 12px 10px; display: flex; align-items: center; }}
-                .live-vote-mode {{ margin-bottom: 14px; padding: 16px; border-radius: 18px; background: #111827; color: #fff; box-shadow: 0 14px 34px rgba(17, 24, 39, .22); }}
-                .mode-label {{ display: inline-flex; margin-bottom: 12px; padding: 7px 10px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 13px; font-weight: 900; letter-spacing: .08em; }}
+                .live-vote-mode {{ margin-bottom: 14px; padding: 16px; border-radius: 18px; background: var(--color-primary-navy); color: var(--color-card-background); box-shadow: 0 14px 34px rgba(17, 24, 39, .22); }}
+                .mode-label {{ display: inline-flex; margin-bottom: 12px; padding: 7px 10px; border-radius: 999px; background: var(--color-accent-blue); color: var(--color-card-background); font-size: 13px; font-weight: 900; letter-spacing: .08em; }}
                 .live-grid {{ display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }}
                 .live-grid div {{ padding: 12px; border-radius: 12px; background: rgba(255,255,255,.09); }}
                 .live-grid strong, .live-grid span {{ display: block; }}
-                .live-grid strong {{ margin-bottom: 6px; color: #bfdbfe; }}
+                .live-grid strong {{ margin-bottom: 6px; color: var(--color-light-background); }}
                 .live-vote-mode li {{ margin-bottom: 10px; line-height: 1.45; }}
-                .live-vote-mode li span {{ color: #dbeafe; }}
+                .live-vote-mode li span {{ color: var(--color-light-background); }}
                 .signup-card {{
-                    background: #ffffff;
-                    border: 1px solid #dbe3ef;
+                    background: var(--color-card-background);
+                    border: 1px solid var(--color-border-gray);
                     border-radius: 18px;
                     box-shadow: 0 2px 8px rgba(15,23,42,.07);
                     padding: 18px;
                     margin: 24px 0;
                 }}
-                .signup-card h2 {{ margin-top: 0; }}
-                .signup-card p {{ color: #475569; }}
-                .signup-card .notice {{ font-size: 14px; color: #64748b; }}
+                .signup-card h2 {{ margin-top: 0; color: var(--color-primary-navy); }}
+                .signup-card p {{ color: var(--color-text-muted); }}
+                .signup-card .notice {{ font-size: 14px; color: var(--color-text-muted); }}
                 .signup-message {{ min-height: 20px; margin-top: 8px; font-weight: 800; }}
-                .signup-message.success {{ color: #047857; }}
-                .signup-message.error {{ color: #b91c1c; }}
+                .signup-message.success {{ color: var(--color-accent-blue); }}
+                .signup-message.error {{ color: var(--color-deep-senate-navy); }}
                 .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }}
                 @media (display-mode: standalone) {{ .app-header {{ padding-top: max(10px, env(safe-area-inset-top)); }} h1 {{ font-size: 25px; }} .sub:first-of-type {{ display: none; }} }}
                 @media(max-width: 760px) {{
