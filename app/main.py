@@ -2970,11 +2970,11 @@ def empty_message(title: str) -> str:
     messages = {
         "Key Votes": "No votes scheduled or underway.",
         "News Events & Stakeouts": "No scheduled press events detected.",
-        "Committee Meetings & Hearings": "No hearings scheduled.",
+        "Committee Meetings & Hearings": "No active committee hearings detected.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural updates listed.",
         "Recent Procedure": "No procedural actions in the last 72 hours.",
-        "Current Coverage Signals": "No current Senate floor movement.",
+        "Current Coverage Signals": "No active Senate floor, hearing, or press movement detected.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No votes scheduled.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
@@ -2983,7 +2983,14 @@ def empty_message(title: str) -> str:
     return f"<p class=\"empty\">{html.escape(messages.get(title, 'No active Senate floor proceedings detected.'))}</p>"
 
 
-def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
+def _refresh_key(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", clean(label).lower()).strip("-") or "section"
+
+
+def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False, hide_empty: bool = False) -> str:
+    key = _refresh_key(title)
+    if hide_empty and not items:
+        return f'<div hidden data-refresh-key="{key}"></div>'
     if collapsed:
         limit = 5 if title == "Current Coverage Signals" else 20
         visible = items[:limit]
@@ -2992,8 +2999,8 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
         hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Current Coverage Signals" else ""
 
         return f"""
-        <section class="section">
-            <details>
+        <section class="section" data-refresh-key="{key}">
+            <details data-accordion-key="{key}">
                 <summary><h2>{html.escape(title)} ({len(items)})</h2></summary>
                 {cards if cards else empty_message(title)}{hidden_note}
             </details>
@@ -3003,7 +3010,7 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
     cards = "".join(item_card(item, view) for item in items)
 
     return f"""
-    <section class="section">
+    <section class="section" data-refresh-key="{key}">
         <h2>{html.escape(title)}</h2>
         {cards if cards else empty_message(title)}
     </section>
@@ -3508,11 +3515,60 @@ def render_live_vote_mode(items: List[JoltItem], forward_context: Dict[str, Any]
 
 def render_quick_link_groups() -> str:
     pieces = []
-    for index, (group, links) in enumerate(QUICK_LINK_GROUPS.items()):
+    for group, links in QUICK_LINK_GROUPS.items():
+        key = _refresh_key(f"links-{group}")
         rows = "".join(f"<a href='{html.escape(url)}' target='_blank' rel='noopener'>{html.escape(name)}</a>" for name, url in links)
-        open_attr = " open" if index == 0 else ""
-        pieces.append(f"<details class='link-group'{open_attr}><summary>{html.escape(group)}</summary>{rows}</details>")
+        pieces.append(f"<details class='link-group' data-accordion-key='{key}'><summary>{html.escape(group)}</summary>{rows}</details>")
     return "".join(pieces)
+
+
+def coverage_signal_reasons(groups: Dict[str, List[JoltItem]], schedule_context: Dict[str, Any]) -> List[str]:
+    reasons: List[str] = []
+    vote_block = (schedule_context or {}).get("vote_block") or {}
+    if vote_block:
+        date_label = vote_block.get("date_label") or vote_block.get("date") or "the next scheduled floor day"
+        time_label = canonical_vote_block_time(schedule_context) or vote_block.get("time_label") or "time pending"
+        reasons.append(f"Upcoming vote window scheduled for {date_label} at {time_label}.")
+
+    expected_votes = (schedule_context or {}).get("expected_votes") or []
+    cloture_votes = [vote for vote in expected_votes if "cloture" in clean(vote).lower()]
+    if cloture_votes:
+        reasons.append(f"Cloture vote window listed: {clean(cloture_votes[0])}.")
+    elif expected_votes and not vote_block:
+        reasons.append("Scheduled procedural vote window listed in public floor schedule.")
+
+    next_convening = (schedule_context or {}).get("next_convening") or {}
+    if next_convening and not vote_block and not expected_votes:
+        date_label = next_convening.get("date_label") or next_convening.get("date") or "the next scheduled floor day"
+        time_label = next_convening.get("time_label") or "time pending"
+        reasons.append(f"Scheduled floor convening window listed for {date_label} at {time_label}.")
+
+    committee_count = len(groups.get("Committee Meetings & Hearings", []))
+    if committee_count:
+        reasons.append(f"{committee_count} active committee hearing{'s' if committee_count != 1 else ''} or meeting listed.")
+
+    event_count = len(groups.get("Events", []))
+    if event_count:
+        reasons.append(f"{event_count} scheduled press event{'s' if event_count != 1 else ''} or stakeout listed.")
+
+    floor_count = len(groups.get("Floor Action", [])) + len(groups.get("Schedule", []))
+    if floor_count and not reasons:
+        reasons.append("Active floor or scheduled procedural movement listed in public sources.")
+
+    return reasons
+
+
+def render_signal_summary(reasons: List[str], vote_count: int) -> str:
+    signal_count = len(reasons)
+    signal_label = "Coverage Signal" if signal_count == 1 else "Coverage Signals"
+    vote_stat = f"<div class='stat'><b>{vote_count}</b>Votes</div>" if vote_count else ""
+    reason_text = " — " + " ".join(reasons[:2]) if reasons else ""
+    return f"""
+    <div class="summary" data-refresh-key="coverage-summary">
+        <div class="stat signal-stat"><b>{signal_count if signal_count > 0 else "—"}</b>{signal_label}<span>{html.escape(reason_text)}</span></div>
+        {vote_stat}
+    </div>
+    """
 
 
 def pwa_smoke_test() -> Dict[str, Any]:
@@ -3584,7 +3640,7 @@ def dashboard(
         top_signal = signals[0] if signals else None
         schedule_context = (forward_context.get("schedule_context", {}) if forward_context else {})
         expected_votes = schedule_context.get("expected_votes", []) if schedule_context else []
-        active_signal_count = (1 if schedule_context.get("next_convening") else 0) + (1 if schedule_context.get("vote_block") else 0) + len(expected_votes)
+        signal_reasons = coverage_signal_reasons(groups, schedule_context)
         coverage_timing = "Expected" if next_items else "No active window"
         watch_list = ", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule"
         if top_signal:
@@ -3608,7 +3664,6 @@ def dashboard(
 
         status_bar = f"Sources: Congressional Reporters {html.escape(friendly_status('congressional_reporters'))} · EBB {html.escape(friendly_status('ebb'))} · Congress.gov API {html.escape(friendly_status('congress_api'))} · Committee Schedule {html.escape(friendly_status('committee_schedule'))}"
 
-        outlook = coverage_outlook(items, groups)
         alert_signals = build_alert_signals(items, forward_context, now)
         notification_events = build_notification_events(items, forward_context, now)
         if request.headers.get("X-Senate-Jolt-Live") != "1":
@@ -3870,6 +3925,7 @@ def dashboard(
                 .section {{ margin-top: 18px; }}
                 .card, .stat, .outlook, .links, .ticker, .empty {{ overflow-wrap: anywhere; }}
                 .summary, .topgrid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
+                .signal-stat span {{ display: block; margin-top: 6px; color: var(--color-text-muted); font-size: 14px; line-height: 1.45; }}
                 .links {{ display: grid; gap: 10px; }}
                 .link-group {{ border: 1px solid var(--color-border-gray); border-radius: 14px; background: var(--color-card-background); overflow: hidden; }}
                 .link-group summary {{ min-height: 48px; padding: 14px 16px; cursor: pointer; font-weight: 800; color: var(--color-primary-navy); list-style-position: inside; }}
@@ -3946,33 +4002,24 @@ def dashboard(
             <main id="main-content">
                 {live_vote_mode}
                 <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
-                <div class="ticker">
+                <div class="ticker" data-refresh-key="where-to-be-now">
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
-                <div class="outlook">
-                    <h2>TODAY’S COVERAGE OUTLOOK</h2><p>{html.escape(outlook)}</p>
-                </div>
+                {render_signal_summary(signal_reasons, len(groups.get("Votes", [])))}
 
-                <div class="summary">
-                    <div class="stat"><b>{active_signal_count if active_signal_count > 0 else "—"}</b>Coverage Signals</div>
-                    <div class="stat"><b>{len(groups.get("Votes", []))}</b>Votes</div>
-                    <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
-                </div>
+                <section class="section" data-refresh-key="next-expected-floor-action"><h2>Next Expected Floor Action</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
 
-                <section class="section"><h2>Next Expected Floor Action</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
+                <section class="section" data-refresh-key="top-actions"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
-                <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
-
-                <section class="section"><h2>Active Coverage Signals</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
-                                {section("Senate Floor Activity", groups.get("Schedule", []), view)}
+                {section("Senate Floor Activity", groups.get("Schedule", []), view, hide_empty=True)}
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
-                                <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
-                {section("News Events & Stakeouts", groups.get("Events", []), view)}
+                <section class="section" data-refresh-key="forward-look-legislation-nominations"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
+                {section("News Events & Stakeouts", groups.get("Events", []), view, hide_empty=True)}
                 {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view) if groups.get("House / Joint Coverage Notes", []) else ""}
-                {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
-                {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
-                {section("Recent Procedure", recent_procedure, view, collapsed=True)}
-                {section("Current Coverage Signals", current_coverage_signals, view, collapsed=True)}
+                {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view, hide_empty=True)}
+                {section("Floor Remarks", floor_remarks_items, view, collapsed=True, hide_empty=True)}
+                {section("Recent Procedure", recent_procedure, view, collapsed=True, hide_empty=True)}
+                {section("Current Coverage Signals", current_coverage_signals, view, collapsed=True, hide_empty=True)}
                 {render_material_context_section(material_context, view) if material_context else ""}
 
                 <section class="signup-card" aria-labelledby="alerts-signup-heading">

@@ -19,6 +19,53 @@
     if (warning) warning.hidden = !show;
   }
 
+  function accordionState(root) {
+    const state = {};
+    root.querySelectorAll("details[data-accordion-key]").forEach((node) => {
+      state[node.dataset.accordionKey] = node.open;
+    });
+    return state;
+  }
+
+  function restoreAccordionState(root, state) {
+    root.querySelectorAll("details[data-accordion-key]").forEach((node) => {
+      if (Object.prototype.hasOwnProperty.call(state, node.dataset.accordionKey)) {
+        node.open = state[node.dataset.accordionKey];
+      }
+    });
+  }
+
+  function replaceIfChanged(current, next) {
+    if (!current || !next || current.outerHTML === next.outerHTML) return current;
+    current.replaceWith(next);
+    return next;
+  }
+
+  function selectorEscape(value) {
+    if (window.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  }
+
+  function patchMainContent(nextMain, currentMain) {
+    if (!nextMain || !currentMain) return;
+    const openState = accordionState(currentMain);
+    const nextKeys = new Set();
+
+    nextMain.querySelectorAll("[data-refresh-key]").forEach((nextNode) => {
+      const key = nextNode.dataset.refreshKey;
+      nextKeys.add(key);
+      const currentNode = currentMain.querySelector(`[data-refresh-key="${selectorEscape(key)}"]`);
+      const inserted = replaceIfChanged(currentNode, nextNode);
+      if (!currentNode && inserted) currentMain.appendChild(inserted);
+    });
+
+    currentMain.querySelectorAll("[data-refresh-key]").forEach((currentNode) => {
+      if (!nextKeys.has(currentNode.dataset.refreshKey)) currentNode.remove();
+    });
+
+    restoreAccordionState(currentMain, openState);
+  }
+
   async function refreshLiveData(manual) {
     const y = window.scrollY;
     try {
@@ -31,24 +78,22 @@
       const doc = new DOMParser().parseFromString(text, "text/html");
       const nextMain = doc.getElementById("main-content");
       const currentMain = document.getElementById("main-content");
-      if (nextMain && currentMain) {
-        currentMain.innerHTML = nextMain.innerHTML;
-        setupEmailSignup();
-      }
+      patchMainContent(nextMain, currentMain);
+      setupEmailSignup();
 
       const nextAlert = doc.querySelector(".alert-banner");
       const currentAlert = document.querySelector(".alert-banner");
-      if (currentAlert && nextAlert) currentAlert.replaceWith(nextAlert);
+      if (currentAlert && nextAlert) replaceIfChanged(currentAlert, nextAlert);
       if (currentAlert && !nextAlert) currentAlert.remove();
       if (!currentAlert && nextAlert) document.body.prepend(nextAlert);
 
       const eventsNode = doc.getElementById("notification-events");
       const currentEventsNode = document.getElementById("notification-events");
-      if (eventsNode && currentEventsNode) currentEventsNode.textContent = eventsNode.textContent;
+      if (eventsNode && currentEventsNode && currentEventsNode.textContent !== eventsNode.textContent) currentEventsNode.textContent = eventsNode.textContent;
       setLastUpdated(new Date());
       setOfflineWarning(false);
       maybeSendNotifications();
-      window.scrollTo({ top: y, behavior: manual ? "smooth" : "auto" });
+      window.scrollTo({ top: y, behavior: "auto" });
     } catch (error) {
       setOfflineWarning(true);
       if (manual) console.warn("Senate JOLT live refresh failed", error);
@@ -118,7 +163,8 @@
   function setupEmailSignup() {
     const form = document.getElementById("alerts-signup-form");
     const message = document.getElementById("alerts-signup-message");
-    if (!form || !message) return;
+    if (!form || !message || form.dataset.bound === "true") return;
+    form.dataset.bound = "true";
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       message.textContent = "";

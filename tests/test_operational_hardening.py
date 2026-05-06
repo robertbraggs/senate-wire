@@ -342,7 +342,7 @@ def test_unresolved_prior_procedure_can_be_shown_as_material_carryover():
 def test_empty_current_state_message_uses_operational_language():
     rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True)
 
-    assert "No current Senate floor movement." in rendered
+    assert "No active Senate floor, hearing, or press movement detected." in rendered
     assert "Earlier item. Keep for context only." not in rendered
 
 
@@ -354,3 +354,49 @@ def test_operational_copy_generation_uses_coverage_window_language():
     assert "Next expected vote window" in rendered
     assert "No scheduled press events detected." in outlook
     assert "No scheduled press events detected." in news_empty
+
+
+def test_current_signal_empty_state_uses_noncontradictory_operational_language():
+    rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True)
+
+    assert "No active Senate floor, hearing, or press movement detected." in rendered
+    assert "No current Senate floor movement." not in rendered
+
+
+def test_empty_collapsed_sections_can_be_suppressed_for_clean_zero_state():
+    rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True, hide_empty=True)
+
+    assert "hidden" in rendered
+    assert "No active Senate floor" not in rendered
+
+
+def test_quick_link_accordions_default_collapsed():
+    rendered = main.render_quick_link_groups()
+
+    assert "<details class='link-group' open" not in rendered
+    assert rendered.count("data-accordion-key=") == len(main.QUICK_LINK_GROUPS)
+
+
+def test_coverage_signal_reasons_explain_non_floor_signal_count():
+    schedule_context = {
+        "vote_block": {"date": "2026-05-11", "date_label": "Monday, May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."],
+    }
+
+    reasons = main.coverage_signal_reasons({}, schedule_context)
+    rendered = main.render_signal_summary(reasons, 0)
+
+    assert len(reasons) == 2
+    assert "Upcoming vote window scheduled for Monday, May 11" in rendered
+    assert "Cloture vote window listed" in rendered
+    assert "No active Senate floor" not in rendered
+
+
+def test_refresh_script_patches_sections_and_preserves_scroll_and_accordions():
+    script = (main.BASE_DIR / "static" / "app.js").read_text()
+
+    assert "patchMainContent(nextMain, currentMain)" in script
+    assert "accordionState(currentMain)" in script
+    assert "restoreAccordionState(currentMain, openState)" in script
+    assert "window.scrollTo({ top: y, behavior: \"auto\" })" in script
+    assert "currentMain.innerHTML = nextMain.innerHTML" not in script
