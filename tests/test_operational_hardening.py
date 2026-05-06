@@ -342,7 +342,8 @@ def test_unresolved_prior_procedure_can_be_shown_as_material_carryover():
 def test_empty_current_state_message_uses_operational_language():
     rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True)
 
-    assert "No active Senate floor, hearing, or press movement detected." in rendered
+    assert "0 Current Coverage Signals" in rendered
+    assert "No current coverage signals." in rendered
     assert "Earlier item. Keep for context only." not in rendered
 
 
@@ -359,7 +360,7 @@ def test_operational_copy_generation_uses_coverage_window_language():
 def test_current_signal_empty_state_uses_noncontradictory_operational_language():
     rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True)
 
-    assert "No active Senate floor, hearing, or press movement detected." in rendered
+    assert "No current coverage signals." in rendered
     assert "No current Senate floor movement." not in rendered
 
 
@@ -367,7 +368,54 @@ def test_empty_collapsed_sections_can_be_suppressed_for_clean_zero_state():
     rendered = main.section("Current Coverage Signals", [], "reporter", collapsed=True, hide_empty=True)
 
     assert "hidden" in rendered
-    assert "No active Senate floor" not in rendered
+    assert "No current coverage signals." not in rendered
+
+
+def test_visible_coverage_signal_count_matches_rendered_items():
+    schedule_context = {
+        "vote_block": {"date": "2026-05-11", "date_label": "Monday, May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."],
+    }
+
+    signals = main.build_coverage_signal_items({}, schedule_context)
+    rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+
+    assert len(signals) == 2
+    assert rendered.count('<article class="card">') == len(signals)
+    assert "2 Upcoming Coverage Signals" in rendered
+    assert "Upcoming vote window scheduled for Monday, May 11" in rendered
+    assert "Cloture vote window listed" in rendered
+
+
+def test_coverage_signal_section_hidden_when_no_signals_exist():
+    rendered = main.section(
+        "Current Coverage Signals",
+        main.build_coverage_signal_items({}, {}),
+        "reporter",
+        collapsed=True,
+        hide_empty=True,
+    )
+
+    assert rendered == '<div hidden data-refresh-key="current-coverage-signals"></div>'
+    assert "Current Coverage Signals (1)" not in rendered
+
+
+def test_upcoming_signal_label_avoids_current_floor_contradiction():
+    schedule_context = {
+        "next_convening": {"date": "2026-05-11", "date_label": "Monday, May 11", "time_label": "3:00 p.m."}
+    }
+
+    signals = main.build_coverage_signal_items({}, schedule_context)
+    rendered_section = main.section("Current Coverage Signals", signals, "reporter", collapsed=True)
+    rendered_summary = main.render_signal_summary(
+        [item.title for item in signals], 0, main.coverage_signal_scope(signals)
+    )
+
+    assert "1 Upcoming Coverage Signal" in rendered_section
+    assert "1</b>Upcoming Coverage Signal" in rendered_summary
+    assert "Scheduled floor convening window listed for Monday, May 11" in rendered_section
+    assert "No current Senate floor movement" not in rendered_section + rendered_summary
+    assert "No active Senate floor" not in rendered_section + rendered_summary
 
 
 def test_quick_link_accordions_default_collapsed():

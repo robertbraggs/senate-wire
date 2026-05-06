@@ -2905,6 +2905,24 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         if not has_real_details:
             return ""
 
+    if item.category == "Coverage Signals":
+        logistics_rows = []
+        if is_meaningful(item.coverage_window):
+            logistics_rows.append(("Current/upcoming", item.coverage_window))
+        if is_meaningful(item.coverage_action):
+            logistics_rows.append(("Operational action", item.coverage_action))
+        if is_meaningful(item.public_value):
+            logistics_rows.append(("Why it matters", item.public_value))
+        logistics = ""
+        if logistics_rows:
+            logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in logistics_rows) + "</div>"
+        return f"""
+        <article class="card">
+            <h3>{html.escape(item.title)}</h3>
+            {logistics}
+        </article>
+        """
+
     title = item.title
     description = item.takeaway if is_meaningful(item.takeaway) else ""
 
@@ -2974,7 +2992,7 @@ def empty_message(title: str) -> str:
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural updates listed.",
         "Recent Procedure": "No procedural actions in the last 72 hours.",
-        "Current Coverage Signals": "No active Senate floor, hearing, or press movement detected.",
+        "Current Coverage Signals": "No current coverage signals.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No votes scheduled.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
@@ -2987,31 +3005,49 @@ def _refresh_key(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", clean(label).lower()).strip("-") or "section"
 
 
+def coverage_signal_scope(items: List[JoltItem]) -> str:
+    if any(item.status in {"current", "active", "live"} for item in items):
+        return "Current"
+    return "Upcoming" if items else "Current"
+
+
+def coverage_signal_heading(items: List[JoltItem]) -> str:
+    count = len(items)
+    scope = coverage_signal_scope(items)
+    signal_word = "Signal" if count == 1 else "Signals"
+    return f"{count} {scope} Coverage {signal_word}"
+
+
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False, hide_empty: bool = False) -> str:
     key = _refresh_key(title)
+    is_coverage_signal_section = title == "Current Coverage Signals"
     if hide_empty and not items:
         return f'<div hidden data-refresh-key="{key}"></div>'
     if collapsed:
-        limit = 5 if title == "Current Coverage Signals" else 20
+        limit = 5 if is_coverage_signal_section else 20
         visible = items[:limit]
         cards = "".join(item_card(item, view) for item in visible)
         hidden_count = max(0, len(items) - limit)
-        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Current Coverage Signals" else ""
+        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and is_coverage_signal_section else ""
+        heading = coverage_signal_heading(visible) if is_coverage_signal_section else f"{title} ({len(items)})"
+        if is_coverage_signal_section and not cards:
+            heading = coverage_signal_heading([])
 
         return f"""
         <section class="section" data-refresh-key="{key}">
             <details data-accordion-key="{key}">
-                <summary><h2>{html.escape(title)} ({len(items)})</h2></summary>
+                <summary><h2>{html.escape(heading)}</h2></summary>
                 {cards if cards else empty_message(title)}{hidden_note}
             </details>
         </section>
         """
 
     cards = "".join(item_card(item, view) for item in items)
+    heading = coverage_signal_heading(items) if is_coverage_signal_section else title
 
     return f"""
     <section class="section" data-refresh-key="{key}">
-        <h2>{html.escape(title)}</h2>
+        <h2>{html.escape(heading)}</h2>
         {cards if cards else empty_message(title)}
     </section>
     """
@@ -3522,50 +3558,158 @@ def render_quick_link_groups() -> str:
     return "".join(pieces)
 
 
-def coverage_signal_reasons(groups: Dict[str, List[JoltItem]], schedule_context: Dict[str, Any]) -> List[str]:
-    reasons: List[str] = []
-    vote_block = (schedule_context or {}).get("vote_block") or {}
+def make_coverage_signal_item(title: str, status: str, signal_type: str, coverage_window: str, coverage_action: str, public_value: str, source: str = "Public Senate schedule") -> JoltItem:
+    return JoltItem(
+        source=source,
+        raw=title,
+        date_label=None,
+        time_label=None,
+        sort_datetime=None,
+        category="Coverage Signals",
+        coverage_type=signal_type,
+        title=title,
+        urgency="watch" if status == "current" else "scheduled",
+        status=status,
+        confidence="high",
+        quality="confirmed",
+        location=None,
+        building=None,
+        measure=None,
+        takeaway=title,
+        where_to_be="Senate floor / relevant committee rooms",
+        movement_cue=coverage_action,
+        coverage_action=coverage_action,
+        who_to_watch="Leadership, committees, and floor staff",
+        coverage_note=coverage_action,
+        staff_note=coverage_action,
+        gallery_note=coverage_action,
+        senators_detected=[],
+        coverage_target="floor",
+        press_availability="",
+        best_window="",
+        coverage_window=coverage_window,
+        event_type=signal_type,
+        committee=None,
+        url=None,
+        topic="procedure",
+        signal_type=signal_type,
+        signal_class="primary" if status == "current" else "secondary",
+        signal_score=80 if status == "current" else 60,
+        action_confidence="Confirmed public schedule",
+        movement_status="Watch",
+        coverage_value="High",
+        public_value=public_value,
+        legislative_context=public_value,
+        links=[],
+        official_context={},
+    )
+
+
+def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_context: Dict[str, Any], now: Optional[datetime] = None) -> List[JoltItem]:
+    signals: List[JoltItem] = []
+    schedule_context = schedule_context or {}
+    vote_block = schedule_context.get("vote_block") or {}
     if vote_block:
         date_label = vote_block.get("date_label") or vote_block.get("date") or "the next scheduled floor day"
         time_label = canonical_vote_block_time(schedule_context) or vote_block.get("time_label") or "time pending"
-        reasons.append(f"Upcoming vote window scheduled for {date_label} at {time_label}.")
+        signals.append(make_coverage_signal_item(
+            f"Upcoming vote window scheduled for {date_label} at {time_label}.",
+            "upcoming",
+            "upcoming_vote_window",
+            "Upcoming",
+            "Plan floor coverage before the vote block and monitor roll call sources as voting begins.",
+            "A scheduled vote block can reset reporter positioning and staffing for floor coverage.",
+            source=schedule_context.get("source_label", "Public Senate schedule"),
+        ))
 
-    expected_votes = (schedule_context or {}).get("expected_votes") or []
+    expected_votes = schedule_context.get("expected_votes") or []
     cloture_votes = [vote for vote in expected_votes if "cloture" in clean(vote).lower()]
     if cloture_votes:
-        reasons.append(f"Cloture vote window listed: {clean(cloture_votes[0])}.")
+        signals.append(make_coverage_signal_item(
+            f"Cloture vote window listed: {clean(cloture_votes[0])}.",
+            "upcoming",
+            "cloture_vote_window",
+            "Upcoming",
+            "Prepare for debate-limit and post-vote procedural follow-up coverage.",
+            "A cloture vote can limit debate and move the Senate toward final action.",
+            source=schedule_context.get("source_label", "Public Senate schedule"),
+        ))
     elif expected_votes and not vote_block:
-        reasons.append("Scheduled procedural vote window listed in public floor schedule.")
+        signals.append(make_coverage_signal_item(
+            "Scheduled procedural vote window listed in public floor schedule.",
+            "upcoming",
+            "scheduled_floor_action",
+            "Upcoming",
+            "Monitor the floor schedule and roll call feeds for final timing and vote subjects.",
+            "A scheduled procedural vote can change the floor sequence and coverage plan.",
+            source=schedule_context.get("source_label", "Public Senate schedule"),
+        ))
 
-    next_convening = (schedule_context or {}).get("next_convening") or {}
+    next_convening = schedule_context.get("next_convening") or {}
     if next_convening and not vote_block and not expected_votes:
         date_label = next_convening.get("date_label") or next_convening.get("date") or "the next scheduled floor day"
         time_label = next_convening.get("time_label") or "time pending"
-        reasons.append(f"Scheduled floor convening window listed for {date_label} at {time_label}.")
+        signals.append(make_coverage_signal_item(
+            f"Scheduled floor convening window listed for {date_label} at {time_label}.",
+            "upcoming",
+            "scheduled_floor_action",
+            "Upcoming",
+            "Use convening time as the next checkpoint for floor movement and leader remarks.",
+            "Convening can open the next procedural window even before votes are announced.",
+            source=schedule_context.get("source_label", "Public Senate schedule"),
+        ))
 
-    committee_count = len(groups.get("Committee Meetings & Hearings", []))
-    if committee_count:
-        reasons.append(f"{committee_count} active committee hearing{'s' if committee_count != 1 else ''} or meeting listed.")
+    committee_items = groups.get("Committee Meetings & Hearings", [])
+    if committee_items:
+        status = "current" if any(item.status in {"current", "active", "live"} for item in committee_items) else "upcoming"
+        timing = "Current" if status == "current" else "Upcoming"
+        label = "Committee hearing activity is active now." if status == "current" else "Committee hearing window scheduled."
+        signals.append(make_coverage_signal_item(
+            label,
+            status,
+            "committee_hearing_window",
+            timing,
+            "Check committee rooms, witness lists, and member availability around the hearing window.",
+            "Committee hearings can drive issue coverage and hallway interviews away from the floor.",
+            source="Committee schedule",
+        ))
 
-    event_count = len(groups.get("Events", []))
-    if event_count:
-        reasons.append(f"{event_count} scheduled press event{'s' if event_count != 1 else ''} or stakeout listed.")
+    floor_items = groups.get("Floor Action", []) + groups.get("Schedule", [])
+    if floor_items and not signals:
+        status = "current" if any(item.status in {"current", "active", "live"} for item in floor_items) else "upcoming"
+        timing = "Current" if status == "current" else "Upcoming"
+        signals.append(make_coverage_signal_item(
+            "Active floor or scheduled procedural movement listed in public sources." if status == "current" else "Scheduled floor action listed in public sources.",
+            status,
+            "major_procedural_transition",
+            timing,
+            "Monitor floor proceedings, leadership movement, and official schedule updates.",
+            "Floor procedural movement can change vote timing, access windows, and story priority.",
+        ))
 
-    floor_count = len(groups.get("Floor Action", [])) + len(groups.get("Schedule", []))
-    if floor_count and not reasons:
-        reasons.append("Active floor or scheduled procedural movement listed in public sources.")
-
-    return reasons
+    return signals[:5]
 
 
-def render_signal_summary(reasons: List[str], vote_count: int) -> str:
+def coverage_signal_reasons(groups: Dict[str, List[JoltItem]], schedule_context: Dict[str, Any]) -> List[str]:
+    return [item.title for item in build_coverage_signal_items(groups, schedule_context)]
+
+
+def _infer_signal_summary_scope(reasons: List[str]) -> str:
+    if not reasons:
+        return "Current"
+    current_terms = ("active", "current", "underway", "now")
+    return "Current" if any(any(term in reason.lower() for term in current_terms) for reason in reasons) else "Upcoming"
+
+
+def render_signal_summary(reasons: List[str], vote_count: int, signal_scope: Optional[str] = None) -> str:
     signal_count = len(reasons)
-    signal_label = "Coverage Signal" if signal_count == 1 else "Coverage Signals"
+    scope = signal_scope or _infer_signal_summary_scope(reasons)
+    signal_label = f"{scope} Coverage {'Signal' if signal_count == 1 else 'Signals'}"
     vote_stat = f"<div class='stat'><b>{vote_count}</b>Votes</div>" if vote_count else ""
-    reason_text = " — " + " ".join(reasons[:2]) if reasons else ""
+    reason_text = " ".join(reasons[:2]) if reasons else "No current coverage signals."
     return f"""
     <div class="summary" data-refresh-key="coverage-summary">
-        <div class="stat signal-stat"><b>{signal_count if signal_count > 0 else "—"}</b>{signal_label}<span>{html.escape(reason_text)}</span></div>
+        <div class="stat signal-stat"><b>{signal_count}</b>{signal_label}<span>{html.escape(reason_text)}</span></div>
         {vote_stat}
     </div>
     """
@@ -3629,8 +3773,7 @@ def dashboard(
         activity_candidates: List[JoltItem] = []
         for activity_category in ["Earlier Floor Activity", "Schedule", "Votes", "Floor Action", "Committee Meetings & Hearings"]:
             activity_candidates.extend(all_groups.get(activity_category, []))
-        current_coverage_signals, material_context = recent_activity_buckets(activity_candidates, now)
-        current_coverage_signals = current_coverage_signals[:5]
+        _recent_activity_signals, material_context = recent_activity_buckets(activity_candidates, now)
         material_context = material_context[:1]
 
         now_item = important_now(items)
@@ -3640,7 +3783,9 @@ def dashboard(
         top_signal = signals[0] if signals else None
         schedule_context = (forward_context.get("schedule_context", {}) if forward_context else {})
         expected_votes = schedule_context.get("expected_votes", []) if schedule_context else []
-        signal_reasons = coverage_signal_reasons(groups, schedule_context)
+        current_coverage_signals = build_coverage_signal_items(groups, schedule_context, now)
+        signal_reasons = [item.title for item in current_coverage_signals]
+        signal_scope = coverage_signal_scope(current_coverage_signals)
         coverage_timing = "Expected" if next_items else "No active window"
         watch_list = ", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule"
         if top_signal:
@@ -4005,7 +4150,7 @@ def dashboard(
                 <div class="ticker" data-refresh-key="where-to-be-now">
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
-                {render_signal_summary(signal_reasons, len(groups.get("Votes", [])))}
+                {render_signal_summary(signal_reasons, len(groups.get("Votes", [])), signal_scope)}
 
                 <section class="section" data-refresh-key="next-expected-floor-action"><h2>Next Expected Floor Action</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
 
