@@ -189,3 +189,64 @@ def test_congress_api_key_not_embedded_in_default_source_urls(monkeypatch):
 
     assert "api_key=SECRETKEY" not in serialized
     assert any(config.name == "congress_committee_meetings" and config.params.get("api_key") == "SECRETKEY" for config in configs)
+
+
+def make_test_jolt_item(raw="Sen. Thune filed cloture on the nomination."):
+    return main.JoltItem(
+        source="pytest",
+        raw=raw,
+        date_label="Today",
+        time_label="5:30 p.m.",
+        sort_datetime="2026-05-06T17:30:00",
+        category="Floor Action",
+        title="Floor action",
+        urgency="monitor",
+        status="upcoming",
+        confidence="high",
+        quality="confirmed",
+        location="Senate floor",
+        building="Capitol",
+        measure="S. 1",
+        takeaway="Procedural action.",
+        where_to_be="Senate floor",
+        movement_cue="Watch floor.",
+        who_to_watch="Leadership",
+        coverage_note="Monitor.",
+        staff_note="Monitor.",
+        gallery_note="Monitor.",
+        senators_detected=[],
+        coverage_target="floor",
+        press_availability="",
+        best_window="",
+        event_type="floor_action",
+        committee=None,
+        url="fixture://event",
+        topic="procedure",
+        procedure_interpretation=main.classify_event_text(raw),
+    )
+
+
+def test_events_payload_preserves_existing_keys_and_adds_interpretation(monkeypatch):
+    monkeypatch.setattr(main, "get_all_items", lambda: [make_test_jolt_item()])
+
+    payload = main.events_endpoint()
+    item = payload["items"][0]
+
+    assert payload["app"] == main.APP_NAME
+    assert payload["view"] == "reporter"
+    assert "raw" in item
+    assert "title" in item
+    assert "procedure_interpretation" in item
+    assert item["procedure_interpretation"]["status_code"] == "CLOTURE_FILED"
+
+
+def test_summary_payload_preserves_existing_keys_and_adds_interpretations(monkeypatch):
+    monkeypatch.setattr(main, "get_all_items", lambda: [make_test_jolt_item()])
+
+    payload = main.summary_endpoint()
+
+    assert payload["app"] == main.APP_NAME
+    assert "total" in payload
+    assert "votes" in payload
+    assert "procedure_interpretations" in payload
+    assert payload["procedure_interpretations"][0]["status_label"] == "Cloture filed"

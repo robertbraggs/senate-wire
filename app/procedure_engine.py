@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
-# This module turns the legislative status-step map into a lightweight
-# procedural state machine for reporter/producer interpretation of parsed events.
+# Procedural interpretation layer for operational/newsroom awareness.
+# This uses the legislative status-step index as its source of truth and does
+# not forecast outcomes, whip counts, or political positioning.
 @dataclass(frozen=True)
 class StatusStep:
     code: str
@@ -19,6 +20,14 @@ class StatusStep:
     incoming: List[str]
     outgoing: List[str]
     notes: str
+
+
+@dataclass(frozen=True)
+class EventRule:
+    code: str
+    patterns: List[str]
+    confidence: str
+    significance: Optional[str] = None
 
 
 def _split_codes(value: str) -> List[str]:
@@ -96,49 +105,101 @@ def likely_next_steps(step: StatusStep, index: Optional[Dict[str, StatusStep]] =
     return resolved
 
 
-_RULES: List[tuple[str, List[str], str]] = [
-    ("SIGNED_PRESIDENT", [r"\bsigned\b.*\bpresident\b", r"\bpresident\b.*\bsigned\b", r"\bbecame public law\b"], "high"),
-    ("VETO_OVERRIDE", [r"\boverr(?:ode|idden|ide)\b.*\bveto\b", r"\bveto\b.*\boverr"], "high"),
-    ("VETOED", [r"\bveto(?:ed| message)?\b", r"\bpresident\b.*\breturned\b.*\bobjections\b"], "high"),
-    ("PRESENTED_PRESIDENT", [r"\bpresented to the president\b", r"\bpresented\b.*\bpresident\b"], "high"),
-    ("ENROLLED_BILL", [r"\benrolled bill\b", r"\bmessage.*enrolled\b"], "high"),
-    ("CONFERENCE_REPORT_AGREED", [r"\bconference report\b.*\bagreed to\b", r"\bagreed to\b.*\bconference report\b"], "high"),
-    ("CONFERENCE_REPORT_FILED", [r"\bconference report\b.*\bfiled\b", r"\bfiled\b.*\bconference report\b"], "high"),
-    ("CONFEREES_APPOINTED", [r"\bconferees?\b.*\bappointed\b", r"\bappointed\b.*\bconferees?\b"], "high"),
-    ("CONFERENCE_REQUESTED", [r"\bconference\b.*\brequested\b", r"\brequest(?:ed)? a conference\b"], "high"),
-    ("PASSED_HOUSE", [r"\bpassed\b.*\bhouse\b", r"\bhouse\b.*\bpassed\b"], "medium"),
-    ("PASSED_SENATE", [r"\bpassed (?:the )?senate\b", r"\bsenate passed\b", r"\bpassed by voice vote\b"], "high"),
-    ("HOUSE_MESSAGE", [r"\bmessage from the house\b", r"\bhouse message\b", r"\breceived from the house\b"], "high"),
-    ("CLOTURE_INVOKED", [r"\binvoked cloture\b", r"\bcloture\b.*\binvoked\b"], "high"),
-    ("CLOTURE_REJECTED", [r"\bcloture\b.*\bnot invoked\b", r"\bfailed\b.*\bcloture\b", r"\brejected\b.*\bcloture\b"], "high"),
-    ("CLOTURE_FILED", [r"\bfiled cloture\b", r"\bcloture (?:was )?filed\b", r"\bmotion to invoke cloture\b.*\bfiled\b"], "high"),
-    ("REPORTED_COMMITTEE", [r"\breported (?:by|from) committee\b", r"\bcommittee\b.*\breported\b", r"\bordered reported\b"], "high"),
-    ("AMENDMENT_TREE_FILLED", [r"\bamendment tree\b.*\bfilled\b", r"\bfilled the tree\b"], "high"),
-    ("SUBSTITUTE_AMENDMENT", [r"\bsubstitute amendment\b", r"\bamendment in the nature of a substitute\b"], "high"),
-    ("AMENDMENT_PENDING", [r"\bamendment\b.*\bpending\b", r"\bpending amendment\b"], "medium"),
-    ("VOTE_SCHEDULED", [r"\bwill vote\b", r"\bvote scheduled\b", r"\broll call vote(?:s)?\b.*\bat\b"], "medium"),
-    ("MOTION_TO_PROCEED", [r"\bmotion to proceed\b", r"\bproceed to (?:the )?consideration\b"], "high"),
-    ("PLACED_CALENDAR", [r"\bplaced on (?:the )?calendar\b", r"\bcalendar no\."], "high"),
-    ("DISCHARGED", [r"\bdischarged from\b", r"\bmotion to discharge\b", r"\bcommittee discharged\b"], "high"),
-    ("COMMITTEE_MARKUP", [r"\bmarkup\b", r"\bexecutive session\b", r"\bbusiness meeting\b"], "high"),
-    ("COMMITTEE_HEARING", [r"\bhearing\b", r"\bcommittee meets?\b.*\btestimony\b"], "high"),
-    ("REFERRED_COMMITTEE", [r"\breferred to (?:the )?.*committee\b", r"\breferral to (?:the )?.*committee\b"], "high"),
-    ("BILL_INTRODUCED", [r"\bintroduced\b", r"\bintroduced (?:a|the) bill\b"], "medium"),
+_RULES: List[EventRule] = [
+    EventRule("SIGNED_PRESIDENT", [r"\bsigned\b.*\bpresident\b", r"\bpresident\b.*\bsigned\b", r"\bbecame public law\b"], "high"),
+    EventRule("VETO_OVERRIDE", [r"\boverr(?:ode|idden|ide)\b.*\bveto\b", r"\bveto\b.*\boverr"], "high"),
+    EventRule("VETOED", [r"\bveto(?:ed| message)?\b", r"\bpresident\b.*\breturned\b.*\bobjections\b"], "high"),
+    EventRule("PRESENTED_PRESIDENT", [r"\bpresented to the president\b", r"\bpresented\b.*\bpresident\b"], "high"),
+    EventRule("ENROLLED_BILL", [r"\benrolled bill\b", r"\bmessage.*enrolled\b"], "high"),
+    EventRule("CONFERENCE_REPORT_AGREED", [r"\bconference report\b.*\b(?:agreed to|adopted)\b", r"\b(?:agreed to|adopted)\b.*\bconference report\b"], "high"),
+    EventRule("CONFERENCE_REPORT_FILED", [r"\bconference report\b.*\bfiled\b", r"\bfiled\b.*\bconference report\b"], "high"),
+    EventRule("CONFEREES_APPOINTED", [r"\bconferees?\b.*\bappointed\b", r"\bappointed\b.*\bconferees?\b"], "high"),
+    EventRule("CONFERENCE_REQUESTED", [r"\bconference\b.*\brequested\b", r"\brequest(?:ed)? a conference\b"], "high"),
+    EventRule("PASSED_HOUSE", [r"\bpassed\b.*\bhouse\b", r"\bhouse\b.*\bpassed\b"], "medium"),
+    EventRule("PASSED_SENATE", [r"\b(?:reached|agreed to|passed|approved|secured) final passage\b", r"\bpassed (?:the )?senate\b", r"\bsenate passed\b", r"\bpassed by voice vote\b"], "high"),
+    EventRule("HOUSE_MESSAGE", [r"\bmessage from the house\b", r"\bhouse message\b", r"\breceived from the house\b"], "high"),
+    EventRule("CLOTURE_INVOKED", [r"\binvoked cloture\b", r"\bcloture\b.*\binvoked\b"], "high"),
+    EventRule("CLOTURE_REJECTED", [r"\bcloture\b.*\bnot invoked\b", r"\bfailed\b.*\bcloture\b", r"\brejected\b.*\bcloture\b"], "high"),
+    EventRule("CLOTURE_FILED", [r"\bfiled cloture\b", r"\bcloture (?:was )?filed\b", r"\bmotion to invoke cloture\b.*\bfiled\b"], "high"),
+    EventRule("REPORTED_COMMITTEE", [r"\breported (?:by|from) (?:the )?.*committee\b", r"\bcommittee\b.*\breported\b", r"\bordered reported\b"], "high"),
+    EventRule("AMENDMENT_TREE_FILLED", [r"\bamendment tree\b.*\bfilled\b", r"\bfilled the tree\b"], "high"),
+    EventRule("SUBSTITUTE_AMENDMENT", [r"\bsubstitute amendment\b", r"\bamendment in the nature of a substitute\b"], "high"),
+    EventRule("AMENDMENT_PENDING", [r"\bamendment\b.*\bpending\b", r"\bpending amendment\b"], "medium"),
+    EventRule("VOTE_SCHEDULED", [r"\bwill vote\b", r"\bvote scheduled\b", r"\broll call vote(?:s)?\b.*\bat\b"], "medium"),
+    EventRule("MOTION_TO_PROCEED", [r"\bmotion to proceed\b.*\bagreed to\b", r"\bagreed to\b.*\bmotion to proceed\b"], "high", "major"),
+    EventRule("MOTION_TO_PROCEED", [r"\bmotion to proceed\b", r"\bproceed to (?:the )?consideration\b"], "high"),
+    EventRule("PLACED_CALENDAR", [r"\bplaced on (?:the )?calendar\b", r"\bcalendar no\."], "high"),
+    EventRule("DISCHARGED", [r"\bdischarged from\b", r"\bmotion to discharge\b", r"\bcommittee discharged\b"], "high"),
+    EventRule("COMMITTEE_MARKUP", [r"\bmarkup\b", r"\bexecutive session\b", r"\bbusiness meeting\b"], "high"),
+    EventRule("COMMITTEE_HEARING", [r"\bhearing\b", r"\bcommittee meets?\b.*\btestimony\b"], "high"),
+    EventRule("REFERRED_COMMITTEE", [r"\breferred to (?:the )?.*committee\b", r"\breferral to (?:the )?.*committee\b"], "high"),
+    EventRule("BILL_INTRODUCED", [r"\bintroduced\b", r"\bintroduced (?:a|the) bill\b"], "medium"),
+    EventRule("QUORUM_CALL", [r"\bquorum call\b"], "high"),
+    EventRule("RECESS", [r"\brecess(?:ed)?\b", r"\bstand(?:s)? in recess\b"], "high"),
 ]
 
-_MAJOR = {"CLOTURE_INVOKED", "CLOTURE_REJECTED", "PASSED_SENATE", "PASSED_HOUSE", "CONFERENCE_REPORT_AGREED", "SIGNED_PRESIDENT", "VETOED", "VETO_OVERRIDE"}
-_NOTABLE = {"CLOTURE_FILED", "MOTION_TO_PROCEED", "AMENDMENT_TREE_FILLED", "CONFERENCE_REQUESTED", "CONFEREES_APPOINTED", "CONFERENCE_REPORT_FILED", "HOUSE_MESSAGE", "REPORTED_COMMITTEE", "DISCHARGED", "PRESENTED_PRESIDENT"}
-_NOISE = {"COMMITTEE_HEARING", "BILL_INTRODUCED"}
+# Significance is intentionally procedural only: it rates movement through the
+# status map, not politics or the probability that a measure will pass.
+_MAJOR = {
+    "CLOTURE_FILED",
+    "CLOTURE_INVOKED",
+    "CLOTURE_REJECTED",
+    "PASSED_SENATE",
+    "PASSED_HOUSE",
+    "CONFERENCE_REPORT_AGREED",
+    "SIGNED_PRESIDENT",
+    "VETOED",
+    "VETO_OVERRIDE",
+}
+_NOTABLE = {
+    "MOTION_TO_PROCEED",
+    "AMENDMENT_TREE_FILLED",
+    "CONFERENCE_REQUESTED",
+    "CONFEREES_APPOINTED",
+    "CONFERENCE_REPORT_FILED",
+    "HOUSE_MESSAGE",
+    "REPORTED_COMMITTEE",
+    "DISCHARGED",
+    "PRESENTED_PRESIDENT",
+    "SUBSTITUTE_AMENDMENT",
+}
+_NOISE = {"COMMITTEE_HEARING", "BILL_INTRODUCED", "QUORUM_CALL", "RECESS"}
 
 
 def classify_event_text(text: str) -> Optional[Dict[str, Any]]:
     value = " ".join((text or "").split()).lower()
     if not value:
         return None
-    for code, patterns, confidence in _RULES:
-        if any(re.search(pattern, value, flags=re.I) for pattern in patterns):
-            return interpret_status(code, source_text=text, confidence=confidence)
-    return None
+
+    matches: List[EventRule] = []
+    seen_codes = set()
+    for rule in _RULES:
+        if any(re.search(pattern, value, flags=re.I) for pattern in rule.patterns):
+            matches.append(rule)
+            seen_codes.add(rule.code)
+
+    if not matches:
+        return None
+
+    chosen = matches[0]
+    ambiguous_codes = [code for code in seen_codes if code != chosen.code]
+    # Cloture is often filed on a motion to proceed; that phrase supplies
+    # procedural context and should not be treated as a competing status.
+    if chosen.code == "CLOTURE_FILED":
+        ambiguous_codes = [code for code in ambiguous_codes if code != "MOTION_TO_PROCEED"]
+    confidence = chosen.confidence
+    if ambiguous_codes and confidence == "high":
+        confidence = "medium"
+    elif ambiguous_codes:
+        confidence = "low"
+
+    return interpret_status(
+        chosen.code,
+        source_text=text,
+        confidence=confidence,
+        significance_override=chosen.significance,
+        ambiguous_codes=ambiguous_codes,
+    )
 
 
 def _significance(code: str) -> str:
@@ -149,28 +210,41 @@ def _significance(code: str) -> str:
     return "routine"
 
 
-def _reporter_note(step: StatusStep, next_steps: List[str], ambiguous: bool) -> str:
-    suffix = " The transition map is incomplete, so confirm the next official action." if ambiguous else ""
+def _reporter_note(step: StatusStep, next_steps: List[str], ambiguous: bool, ambiguous_labels: List[str]) -> str:
+    suffix = ""
+    if ambiguous_labels:
+        suffix += f" Procedural ambiguity: the text also resembles {', '.join(ambiguous_labels)}; confirm against the official action."
+    if ambiguous:
+        suffix += " The transition map is incomplete, so confirm the next official action."
     return f"Treat as {step.label.lower()} in the {step.phase.lower()} phase. Watch for: {', '.join(next_steps[:3])}.{suffix}"
 
 
 def _producer_note(step: StatusStep, significance: str) -> str:
     if significance == "major":
-        return f"Flag for possible live/update treatment: {step.label} can change the legislative outcome or timing."
+        return f"Flag for possible live/update treatment: {step.label} can materially change floor posture or timing."
     if significance == "notable":
         return f"Add to the coverage watch list: {step.label} may set up the next floor or inter-chamber move."
     return f"Log for context unless tied to a named senator, vote, or leadership announcement: {step.label}."
 
 
-def interpret_status(code: str, *, source_text: str = "", confidence: str = "medium") -> Optional[Dict[str, Any]]:
+def interpret_status(
+    code: str,
+    *,
+    source_text: str = "",
+    confidence: str = "medium",
+    significance_override: Optional[str] = None,
+    ambiguous_codes: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
     step = get_status_step(code)
     if not step:
         return None
     next_steps = likely_next_steps(step)
-    ambiguous = any("unmapped" in value.lower() or "no outgoing transition" in value.lower() for value in next_steps)
-    significance = _significance(step.code)
+    transition_ambiguous = any("unmapped" in value.lower() or "no outgoing transition" in value.lower() for value in next_steps)
+    ambiguous_labels = [status_index()[value].label for value in (ambiguous_codes or []) if value in status_index()]
+    significance = significance_override or _significance(step.code)
     return {
         "status_code": step.code,
+        "status_label": step.label,
         "label": step.label,
         "chamber": step.chamber,
         "phase": step.phase,
@@ -178,9 +252,9 @@ def interpret_status(code: str, *, source_text: str = "", confidence: str = "med
         "significance": significance,
         "noise_or_movement": "noise" if step.code in _NOISE else "movement",
         "likely_next_steps": next_steps,
-        "reporter_note": _reporter_note(step, next_steps, ambiguous),
+        "reporter_note": _reporter_note(step, next_steps, transition_ambiguous, ambiguous_labels),
         "producer_note": _producer_note(step, significance),
-        "confidence": "low" if ambiguous and confidence == "medium" else confidence,
+        "confidence": "low" if transition_ambiguous and confidence == "medium" else confidence,
     }
 
 
