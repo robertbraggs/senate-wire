@@ -1,3 +1,9 @@
+/*
+COLOR LOCK:
+Do not change color values unless explicitly requested.
+All new UI must inherit existing Senate JOLT colors.
+*/
+
 body {
     font-family: Inter, Arial, sans-serif;
     margin: 0;
