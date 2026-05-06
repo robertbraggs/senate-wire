@@ -1376,10 +1376,10 @@ def apply_past_status(item: JoltItem) -> JoltItem:
     if dt < now - timedelta(minutes=45):
         item.status = "historical"
         item.urgency = "low"
-        item.movement_cue = "Coverage window has likely passed; useful for record/context."
-        item.coverage_note = "Earlier item. Do not move based on this unless there is follow-up activity."
-        item.gallery_note = "Earlier item; keep for reference unless coverage continues."
-        item.staff_note = "Earlier item; use for procedural context."
+        item.movement_cue = "Prior floor action; monitor only if follow-up activity develops."
+        item.coverage_note = "Prior floor action. Do not move based on this unless there is follow-up activity."
+        item.gallery_note = "Prior floor action; keep off active coverage unless proceedings resume."
+        item.staff_note = "Prior floor action; operational context only."
         if item.category in {"Votes", "Floor Action", "Events", "Schedule"}:
             item.category = "Earlier Floor Activity"
 
@@ -2098,7 +2098,7 @@ def get_all_items() -> List[JoltItem]:
         item.movement_status = "Context only" if item.status == "historical" else "Move Now" if item.signal_score >= 80 else "Prepare to move" if item.signal_score >= 55 and item.best_window in {"before vote", "committee room / public access areas", "scheduled event location"} else "Watch" if item.signal_score >= 55 else "Monitor"
         item.coverage_value = "High" if item.signal_score >= 80 else "Medium" if item.signal_score >= 55 else "Low"
         if item.status == "historical":
-            item.action_line = "Earlier item. Keep for context only."
+            item.action_line = "Prior floor action. Monitor only for follow-up activity."
         elif item.category == "Votes" and item.urgency == "move now":
             item.action_line = "Move to Ohio Clock or chamber exits before Senators clear the floor."
         elif item.category == "Votes":
@@ -2599,7 +2599,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
             <div class='logistics'>
                 <div><strong>Pro forma sessions:</strong><ul>{pro_forma_html}</ul></div>
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
-                <div><strong>Expected vote block:</strong> {html.escape(vote_label)}</div>
+                <div><strong>Next expected floor vote window:</strong> {html.escape(vote_label)}</div>
                 <div><strong>Expected votes:</strong><ol>{votes_html}</ol></div>
                 <div><strong>Legislative context:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is expected to set up executive-session consideration and potential final actions.</div>
                 <div><strong>Coverage timing:</strong> The highest-value public coverage window is the announced vote block.</div>
@@ -2860,7 +2860,7 @@ def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
     return {
         "where_to_be_now": "No active coverage location",
         "movement": "Monitor",
-        "watch": "No votes scheduled today; next vote block is May 11 at approx. 5:30 p.m.",
+        "watch": "No votes scheduled today; next expected vote window is May 11 at approx. 5:30 p.m.",
     }
 
 def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -> str:
@@ -2873,7 +2873,7 @@ def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -
     if groups.get("Schedule"):
         return "Plan around convening time and leader remarks."
 
-    return "No votes scheduled. No hearings scheduled. No media events listed."
+    return "No votes scheduled. No hearings scheduled. No scheduled press events detected."
 
 
 def badge_class(urgency: str) -> str:
@@ -2969,27 +2969,27 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
 def empty_message(title: str) -> str:
     messages = {
         "Key Votes": "No votes scheduled or underway.",
-        "News Events & Stakeouts": "No media events listed.",
+        "News Events & Stakeouts": "No scheduled press events detected.",
         "Committee Meetings & Hearings": "No hearings scheduled.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural updates listed.",
         "Recent Procedure": "No procedural actions in the last 72 hours.",
-        "Recent Activity": "No current Senate floor activity detected.",
+        "Current Coverage Signals": "No current Senate floor movement.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No votes scheduled.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
         "Live Signals": "Live signals are disabled or no reported signals matched.",
     }
-    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No floor activity reported'))}</p>"
+    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No active Senate floor proceedings detected.'))}</p>"
 
 
 def section(title: str, items: List[JoltItem], view: str, collapsed: bool = False) -> str:
     if collapsed:
-        limit = 5 if title == "Recent Activity" else 20
+        limit = 5 if title == "Current Coverage Signals" else 20
         visible = items[:limit]
         cards = "".join(item_card(item, view) for item in visible)
         hidden_count = max(0, len(items) - limit)
-        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Recent Activity" else ""
+        hidden_note = f"<p class='empty'>{hidden_count} additional items collapsed.</p>" if hidden_count and title == "Current Coverage Signals" else ""
 
         return f"""
         <section class="section">
@@ -3011,12 +3011,12 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
 
 
 
-def render_last_known_context_section(items: List[JoltItem], view: str) -> str:
+def render_material_context_section(items: List[JoltItem], view: str) -> str:
     cards = "".join(item_card(item, view) for item in items)
     return f"""
     <section class="section">
-        <h2>Last Known Context</h2>
-        <p class="empty">Showing the latest available prior update for context.</p>
+        <h2>Procedural Carryover</h2>
+        <p class="empty">Prior procedural action shown only because it may affect the next coverage window.</p>
         {cards}
     </section>
     """
@@ -3032,7 +3032,7 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
         next_votes_line = f"Next expected votes: {vote_block_date} · {key_votes_time_label}"
     fallback = "No votes scheduled today."
     if next_votes_line:
-        message = f"{fallback} Next expected vote block is {html.escape(vote_block_date)} at {html.escape(key_votes_time_label)}."
+        message = f"{fallback} Next expected vote window is {html.escape(vote_block_date)} at {html.escape(key_votes_time_label)}."
     else:
         message = fallback
     return f"""
@@ -3133,8 +3133,10 @@ def is_current_recent_activity(item: JoltItem, now: datetime) -> bool:
     return item.status != "historical" and is_unresolved_major_procedural_item(item)
 
 
-def is_last_known_context(item: JoltItem, now: datetime) -> bool:
+def is_material_carryover_context(item: JoltItem, now: datetime) -> bool:
     if not has_meaningful_recent_activity(item):
+        return False
+    if not is_unresolved_major_procedural_item(item):
         return False
     dt = parse_item_datetime(item)
     if not dt:
@@ -3154,7 +3156,7 @@ def recent_activity_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[
         seen.add(key)
         if is_current_recent_activity(item, now):
             current.append(item)
-        elif is_last_known_context(item, now):
+        elif is_material_carryover_context(item, now):
             prior.append(item)
 
     def sort_key(item: JoltItem) -> datetime:
@@ -3426,7 +3428,7 @@ def build_alert_signals(items: List[JoltItem], forward_context: Dict[str, Any], 
     if vote_block and vote_minutes is not None and 0 <= vote_minutes <= 60:
         alerts.append({"title": f"Vote block expected at {vote_block_label}", "body": "Vote block is inside the next hour.", "urgency": "high", "coverage_type": "vote_block_within_60"})
     elif vote_block and vote_dt and vote_dt.date() == now.date():
-        alerts.append({"title": f"Vote block expected at approx. {vote_block_label}" if not vote_block_label.startswith("approx") else f"Vote block expected at {vote_block_label}", "body": "Expected vote block today.", "urgency": "medium", "coverage_type": "expected_vote_block_today"})
+        alerts.append({"title": f"Vote block expected at approx. {vote_block_label}" if not vote_block_label.startswith("approx") else f"Vote block expected at {vote_block_label}", "body": "Next expected vote window today.", "urgency": "medium", "coverage_type": "expected_vote_block_today"})
 
     next_convening = schedule_context.get("next_convening", {}) or {}
     convene_label = next_convening.get("time_label", "")
@@ -3571,9 +3573,9 @@ def dashboard(
         activity_candidates: List[JoltItem] = []
         for activity_category in ["Earlier Floor Activity", "Schedule", "Votes", "Floor Action", "Committee Meetings & Hearings"]:
             activity_candidates.extend(all_groups.get(activity_category, []))
-        earlier_items, last_known_context = recent_activity_buckets(activity_candidates, now)
-        earlier_items = earlier_items[:5]
-        last_known_context = last_known_context[:1]
+        current_coverage_signals, material_context = recent_activity_buckets(activity_candidates, now)
+        current_coverage_signals = current_coverage_signals[:5]
+        material_context = material_context[:1]
 
         now_item = important_now(items)
         next_items = next_90(items)
@@ -3952,7 +3954,7 @@ def dashboard(
                 </div>
 
                 <div class="summary">
-                    <div class="stat"><b>{active_signal_count if active_signal_count > 0 else "—"}</b>Active Signals</div>
+                    <div class="stat"><b>{active_signal_count if active_signal_count > 0 else "—"}</b>Coverage Signals</div>
                     <div class="stat"><b>{len(groups.get("Votes", []))}</b>Votes</div>
                     <div class="stat"><b>{len(groups.get("Events", []))}</b>Events</div>
                 </div>
@@ -3961,7 +3963,7 @@ def dashboard(
 
                 <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
-                <section class="section"><h2>Activity Signals</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
+                <section class="section"><h2>Active Coverage Signals</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
                                 {section("Senate Floor Activity", groups.get("Schedule", []), view)}
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
                                 <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
@@ -3970,8 +3972,8 @@ def dashboard(
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
-                {section("Recent Activity", earlier_items, view, collapsed=True)}
-                {render_last_known_context_section(last_known_context, view) if last_known_context else ""}
+                {section("Current Coverage Signals", current_coverage_signals, view, collapsed=True)}
+                {render_material_context_section(material_context, view) if material_context else ""}
 
                 <section class="signup-card" aria-labelledby="alerts-signup-heading">
                     <h2 id="alerts-signup-heading">Get Senate JOLT alerts</h2>
