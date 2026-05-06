@@ -7,11 +7,26 @@ import json
 import os
 from pathlib import Path
 import requests
+from urllib.parse import parse_qs
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from functools import lru_cache
 from fastapi.staticfiles import StaticFiles
+from app.database import init_db
+from app.alerts import (
+    allow_signup,
+    confirm_subscriber,
+    create_or_update_subscriber,
+    debug_summary as alerts_debug_summary,
+    deliver_alert_events,
+    merge_preferences,
+    normalize_email,
+    send_confirmation_email,
+    smtp_configured,
+    smtp_status,
+    unsubscribe as unsubscribe_subscriber,
+)
 
 
 APP_NAME = "The Senate JOLT"
@@ -25,6 +40,7 @@ FLOOR_ACTIVITY_URL = "https://www.senate.gov/legislative/floor_activity_pail.htm
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 
 app = FastAPI(title=APP_NAME, version="8.1.0")
+init_db()
 BASE_DIR = Path(__file__).resolve().parent.parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -215,6 +231,7 @@ class NotificationEvent:
     urgency: str
     coverage_type: str
     timestamp: str
+    event_time: str
     source: str
     url: str
     expires_at: str
@@ -3138,6 +3155,7 @@ def make_notification_event(title: str, body: str, urgency: str, coverage_type: 
         urgency=urgency,
         coverage_type=coverage_type,
         timestamp=now.isoformat(timespec="seconds"),
+        event_time=event_time,
         source=source,
         url=url,
         expires_at=(now + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds"),
@@ -3368,6 +3386,7 @@ def notification_smoke_test() -> Dict[str, Any]:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
+    request: Request,
     q: Optional[str] = Query(None),
     view: str = Query("reporter", pattern="^(reporter|staff|gallery)$"),
     earlier: bool = Query(False),
@@ -3431,6 +3450,8 @@ def dashboard(
         outlook = coverage_outlook(items, groups)
         alert_signals = build_alert_signals(items, forward_context, now)
         notification_events = build_notification_events(items, forward_context, now)
+        if request.headers.get("X-Senate-Jolt-Live") != "1":
+            deliver_alert_events(notification_events, str(request.base_url))
         notification_events_json = html.escape(json.dumps([asdict(event) for event in notification_events]), quote=False)
         alert_banner = render_alert_banner(alert_signals)
         live_vote_mode = render_live_vote_mode(items, forward_context, now)
@@ -3684,6 +3705,21 @@ def dashboard(
                 .live-grid strong {{ margin-bottom: 6px; color: #bfdbfe; }}
                 .live-vote-mode li {{ margin-bottom: 10px; line-height: 1.45; }}
                 .live-vote-mode li span {{ color: #dbeafe; }}
+                .signup-card {{
+                    background: #ffffff;
+                    border: 1px solid #dbe3ef;
+                    border-radius: 18px;
+                    box-shadow: 0 2px 8px rgba(15,23,42,.07);
+                    padding: 18px;
+                    margin: 24px 0;
+                }}
+                .signup-card h2 {{ margin-top: 0; }}
+                .signup-card p {{ color: #475569; }}
+                .signup-card .notice {{ font-size: 14px; color: #64748b; }}
+                .signup-message {{ min-height: 20px; margin-top: 8px; font-weight: 800; }}
+                .signup-message.success {{ color: #047857; }}
+                .signup-message.error {{ color: #b91c1c; }}
+                .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }}
                 @media (display-mode: standalone) {{ .app-header {{ padding-top: max(10px, env(safe-area-inset-top)); }} h1 {{ font-size: 25px; }} .sub:first-of-type {{ display: none; }} }}
                 @media(max-width: 760px) {{
                     header {{ padding: 14px 12px; }}
@@ -3761,6 +3797,18 @@ def dashboard(
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
                 {section("Recent Activity", earlier_items, view, collapsed=True)}
 
+                <section class="signup-card" aria-labelledby="alerts-signup-heading">
+                    <h2 id="alerts-signup-heading">Get Senate JOLT alerts</h2>
+                    <p>Receive email alerts for major Senate schedule changes, vote windows, media events, and high-value coverage signals.</p>
+                    <form id="alerts-signup-form" action="/alerts/signup" method="post" novalidate>
+                        <label class="sr-only" for="alerts-email">Email address</label>
+                        <input id="alerts-email" name="email" type="email" placeholder="Email address" autocomplete="email" required>
+                        <button type="submit">Sign up</button>
+                    </form>
+                    <div id="alerts-signup-message" class="signup-message" role="status" aria-live="polite"></div>
+                    <p class="notice">Senate JOLT alerts are compiled from public sources and Gallery-appropriate updates. You can unsubscribe at any time.</p>
+                </section>
+
                 <div class="links">
                     <h2>Helpful Links</h2>
                     {quick_links}
@@ -3778,6 +3826,75 @@ def dashboard(
 
     except Exception as exc:
         return HTMLResponse(f"<h1>{APP_NAME} error</h1><p>{html.escape(str(exc))}</p>", status_code=500)
+
+
+async def _read_signup_payload(request: Request) -> Dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+    body = (await request.body()).decode("utf-8", errors="ignore")
+    parsed = parse_qs(body, keep_blank_values=True)
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+def _wants_json(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "application/json" in accept or request.headers.get("x-requested-with") == "fetch"
+
+
+@app.post("/alerts/signup")
+async def alerts_signup(request: Request):
+    if not allow_signup(request.client.host if request.client else "unknown"):
+        payload = {"ok": False, "message": "Please wait before trying again."}
+        return JSONResponse(payload, status_code=429) if _wants_json(request) else HTMLResponse(f"<p>{html.escape(payload['message'])}</p>", status_code=429)
+
+    payload = await _read_signup_payload(request)
+    email = normalize_email(str(payload.get("email", "")))
+    if not email:
+        response = {"ok": False, "message": "Please enter a valid email address."}
+        return JSONResponse(response, status_code=400) if _wants_json(request) else HTMLResponse(f"<p>{html.escape(response['message'])}</p>", status_code=400)
+
+    preferences = merge_preferences(payload.get("alert_preferences"))
+    email_configured = smtp_configured()
+    subscriber = create_or_update_subscriber(email, preferences, confirmed=not email_configured)
+    if email_configured:
+        try:
+            send_confirmation_email(email, subscriber.unsubscribe_token, str(request.base_url))
+        except Exception:
+            # Do not crash signup if SMTP is configured but temporarily unavailable.
+            pass
+
+    response = {
+        "ok": True,
+        "message": "You’re signed up for Senate JOLT alerts.",
+        "confirmation_required": email_configured,
+        "debug_email_sending": smtp_status(),
+    }
+    if _wants_json(request):
+        return response
+    return HTMLResponse(f"<p>{html.escape(response['message'])}</p>")
+
+
+@app.get("/alerts/confirm", response_class=HTMLResponse)
+def alerts_confirm(token: str = Query("")):
+    if confirm_subscriber(token):
+        return HTMLResponse("<h1>Senate JOLT alerts confirmed</h1><p>You’re signed up for Senate JOLT alerts.</p>")
+    return HTMLResponse("<h1>Invalid confirmation link</h1><p>The confirmation token was not found.</p>", status_code=404)
+
+
+@app.get("/alerts/unsubscribe", response_class=HTMLResponse)
+def alerts_unsubscribe(token: str = Query("")):
+    unsubscribe_subscriber(token)
+    return HTMLResponse("<h1>You have been unsubscribed from Senate JOLT alerts.</h1>")
+
+
+@app.get("/debug/alerts")
+def debug_alerts():
+    return alerts_debug_summary()
 
 
 @app.get("/events")

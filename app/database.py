@@ -1,6 +1,6 @@
 from pathlib import Path
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, inspect, text
+from sqlalchemy import Boolean, create_engine, Column, Integer, String, DateTime, Text, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -32,6 +32,46 @@ class Alert(Base):
     source_url = Column(String, nullable=False)
     trigger_text = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Subscriber(Base):
+    __tablename__ = 'alert_subscribers'
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    confirmed = Column(Boolean, default=False, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
+    unsubscribe_token = Column(String, unique=True, nullable=False, index=True)
+    preferences_json = Column(Text, nullable=False)
+    last_alert_sent_at = Column(DateTime, nullable=True)
+
+
+class AlertEvent(Base):
+    __tablename__ = 'alert_events'
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=False)
+    urgency = Column(String, nullable=False)
+    coverage_type = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    source_url = Column(String, nullable=False)
+    event_time = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    dedupe_key = Column(String, unique=True, nullable=False, index=True)
+
+
+class SentAlert(Base):
+    __tablename__ = 'sent_alerts'
+
+    id = Column(Integer, primary_key=True, index=True)
+    alert_id = Column(Integer, nullable=False, index=True)
+    subscriber_id = Column(Integer, nullable=False, index=True)
+    dedupe_key = Column(String, nullable=False, index=True)
+    sent_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    recipient_count = Column(Integer, default=1, nullable=False)
 
 
 def init_db() -> None:
