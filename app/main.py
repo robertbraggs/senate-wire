@@ -2974,7 +2974,7 @@ def empty_message(title: str) -> str:
         "Floor Remarks": "No floor remarks are driving coverage right now.",
         "Procedural Context": "No procedural updates listed.",
         "Recent Procedure": "No procedural actions in the last 72 hours.",
-        "Recent Activity": "No recent activity.",
+        "Recent Activity": "No current Senate floor activity detected.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No votes scheduled.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
@@ -3009,6 +3009,17 @@ def section(title: str, items: List[JoltItem], view: str, collapsed: bool = Fals
     </section>
     """
 
+
+
+def render_last_known_context_section(items: List[JoltItem], view: str) -> str:
+    cards = "".join(item_card(item, view) for item in items)
+    return f"""
+    <section class="section">
+        <h2>Last Known Context</h2>
+        <p class="empty">Showing the latest available prior update for context.</p>
+        {cards}
+    </section>
+    """
 
 def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], view: str) -> str:
     schedule_context = context.get("schedule_context", {}) if context else {}
@@ -3076,16 +3087,86 @@ def movement_ticker(items: List[JoltItem]) -> Dict[str, str]:
 
 
 
-def is_recent_earlier_activity(item: JoltItem, now: datetime, session_day: Optional[date]) -> bool:
+def parse_item_datetime(item: JoltItem) -> Optional[datetime]:
     if not item.sort_datetime:
-        return False
+        return None
     try:
         dt = datetime.fromisoformat(item.sort_datetime)
         if dt.tzinfo is not None:
             dt = dt.replace(tzinfo=None)
+        return dt
     except ValueError:
+        return None
+
+
+def is_unresolved_major_procedural_item(item: JoltItem) -> bool:
+    text = f"{item.title} {item.raw} {item.action_line}".lower()
+    major_terms = [
+        "cloture filed",
+        "cloture motion",
+        "motion to proceed",
+        "unanimous consent request",
+        "uc request",
+        "objection",
+        "pending question",
+    ]
+    resolved_terms = ["cloture invoked", "confirmed", "passed", "agreed to", "adopted", "withdrawn"]
+    return any(term in text for term in major_terms) and not any(term in text for term in resolved_terms)
+
+
+def is_current_recent_activity(item: JoltItem, now: datetime) -> bool:
+    if not has_meaningful_recent_activity(item):
         return False
-    return dt >= now - timedelta(hours=48) or (session_day is not None and dt.date() == session_day and dt >= now - timedelta(hours=48))
+
+    dt = parse_item_datetime(item)
+    if dt:
+        if dt.date() == now.date():
+            return True
+        if dt >= now:
+            return True
+        return False
+
+    active_categories = {"Votes", "Floor Action", "Schedule", "Committee Meetings & Hearings"}
+    if item.status != "historical" and item.category in active_categories:
+        return True
+
+    return item.status != "historical" and is_unresolved_major_procedural_item(item)
+
+
+def is_last_known_context(item: JoltItem, now: datetime) -> bool:
+    if not has_meaningful_recent_activity(item):
+        return False
+    dt = parse_item_datetime(item)
+    if not dt:
+        return item.status == "historical"
+    return dt.date() < now.date()
+
+
+def recent_activity_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltItem], List[JoltItem]]:
+    seen: set[Tuple[str, str, str]] = set()
+    current: List[JoltItem] = []
+    prior: List[JoltItem] = []
+
+    for item in items:
+        key = (item.source, item.title, item.sort_datetime or item.raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        if is_current_recent_activity(item, now):
+            current.append(item)
+        elif is_last_known_context(item, now):
+            prior.append(item)
+
+    def sort_key(item: JoltItem) -> datetime:
+        return parse_item_datetime(item) or datetime.min
+
+    current.sort(key=sort_key, reverse=True)
+    prior.sort(key=sort_key, reverse=True)
+    return current, prior
+
+
+def is_recent_earlier_activity(item: JoltItem, now: datetime, session_day: Optional[date]) -> bool:
+    return is_current_recent_activity(item, now)
 
 
 def has_meaningful_recent_activity(item: JoltItem) -> bool:
@@ -3485,19 +3566,14 @@ def dashboard(
         all_groups = grouped(all_items)
         floor_remarks_items = build_floor_remarks(all_groups.get("Remarks", []))
         procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
-        procedural_keys = {x.title.lower() for x in procedural_items}
-        suppressed_earlier_terms = ["cloture filed", "cloture vote", "unanimous consent", "adjourn", "vote underway", "now voting"]
         now = datetime.now()
         recent_procedure, _background_procedure = procedural_buckets(procedural_items, now)
-        session_day = current_senate_session_day(all_items)
-        earlier_items = [
-            x for x in all_groups.get("Earlier Floor Activity", [])
-            if not any(t in f"{x.title} {x.raw}".lower() for t in suppressed_earlier_terms)
-            and x.title.lower() not in procedural_keys
-            and is_recent_earlier_activity(x, now, session_day)
-            and has_meaningful_recent_activity(x)
-        ]
+        activity_candidates: List[JoltItem] = []
+        for activity_category in ["Earlier Floor Activity", "Schedule", "Votes", "Floor Action", "Committee Meetings & Hearings"]:
+            activity_candidates.extend(all_groups.get(activity_category, []))
+        earlier_items, last_known_context = recent_activity_buckets(activity_candidates, now)
         earlier_items = earlier_items[:5]
+        last_known_context = last_known_context[:1]
 
         now_item = important_now(items)
         next_items = next_90(items)
@@ -3895,6 +3971,7 @@ def dashboard(
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True)}
                 {section("Recent Procedure", recent_procedure, view, collapsed=True)}
                 {section("Recent Activity", earlier_items, view, collapsed=True)}
+                {render_last_known_context_section(last_known_context, view) if last_known_context else ""}
 
                 <section class="signup-card" aria-labelledby="alerts-signup-heading">
                     <h2 id="alerts-signup-heading">Get Senate JOLT alerts</h2>
