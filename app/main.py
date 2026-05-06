@@ -16,6 +16,7 @@ from app.database import init_db
 from app.refresher import SourceRefreshManager
 from app.source_cache import get_source_snapshot, get_source_text, source_status_summary
 from app.security import sanitize_error_message, sanitize_url
+from app.procedure_engine import classify_event_text, classify_events
 from app.alerts import (
     allow_signup,
     confirm_subscriber,
@@ -208,6 +209,7 @@ class JoltItem:
     outcome_stage: Optional[str] = None
     official_context: Dict[str, Any] = None
     links: List[Dict[str, str]] = None
+    procedure_interpretation: Optional[Dict[str, Any]] = None
 
 
 @dataclass(kw_only=True)
@@ -1618,6 +1620,7 @@ def parse_floor_item(raw: str, fallback_date: Optional[date]) -> JoltItem:
         topic=topic,
     )
     item.coverage_target = classify_coverage_target(item)
+    item.procedure_interpretation = classify_event_text(raw)
     item.__dict__.update(fetch_official_context_for_item(item))
 
     return apply_past_status(item)
@@ -1975,6 +1978,7 @@ def fetch_ebb_items() -> List[JoltItem]:
             topic=topic,
         )
         item.coverage_target = classify_coverage_target(item)
+        item.procedure_interpretation = classify_event_text(raw)
 
         items.append(apply_past_status(item))
 
@@ -4023,6 +4027,7 @@ def summary_endpoint():
         "earlier_floor_activity": len(groups.get("Earlier Floor Activity", [])),
         "move_now": len([x for x in items if x.urgency == "move now"]),
         "best_coverage_cue": asdict(now_item) if now_item else None,
+        "procedure_interpretations": classify_events(f"{x.title} {x.raw}" for x in items),
     }
 
 

@@ -1,0 +1,28 @@
+code,label,chamber,phase,incoming,outgoing,notes
+BILL_INTRODUCED,Bill introduced,Originating chamber,Introduction,,REFERRED_COMMITTEE,A measure has been formally introduced and assigned a bill number.
+REFERRED_COMMITTEE,Referred to committee,Senate,Committee,BILL_INTRODUCED,COMMITTEE_HEARING|COMMITTEE_MARKUP|DISCHARGED,Committee referral sends the measure to the panel with jurisdiction before floor action.
+COMMITTEE_HEARING,Committee hearing,Senate,Committee,REFERRED_COMMITTEE,COMMITTEE_MARKUP|REPORTED_COMMITTEE,The committee is gathering testimony or building a record; this is preparatory unless paired with markup or votes.
+COMMITTEE_MARKUP,Committee markup/executive session,Senate,Committee,COMMITTEE_HEARING|REFERRED_COMMITTEE,REPORTED_COMMITTEE|DISCHARGED,The committee may amend and vote on whether to report the measure.
+REPORTED_COMMITTEE,Reported by committee,Senate,Committee,COMMITTEE_MARKUP|COMMITTEE_HEARING,PLACED_CALENDAR|MOTION_TO_PROCEED,"The committee has sent the measure back to the chamber, usually with a report or recommendation."
+DISCHARGED,Discharged from committee,Senate,Committee/Floor,REFERRED_COMMITTEE|COMMITTEE_MARKUP,PLACED_CALENDAR|MOTION_TO_PROCEED,The committee is bypassed or released from further consideration so the chamber can act.
+PLACED_CALENDAR,Placed on calendar,Senate,Floor readiness,REPORTED_COMMITTEE|DISCHARGED,MOTION_TO_PROCEED,The measure is available on a calendar for possible floor consideration.
+MOTION_TO_PROCEED,Motion to proceed,Senate,Floor consideration,PLACED_CALENDAR|HOUSE_MESSAGE,AMENDMENT_PENDING|CLOTURE_FILED|VOTE_SCHEDULED,The Senate is moving to take up a measure; this often signals leadership priority.
+HOUSE_MESSAGE,House message received,Senate,Inter-chamber,HOUSE_PASSED,MOTION_TO_PROCEED|AMENDMENT_PENDING|CONFERENCE_REQUESTED,The Senate has received House action or papers requiring Senate disposition.
+AMENDMENT_PENDING,Amendment pending,Senate,Floor amendments,MOTION_TO_PROCEED,SUBSTITUTE_AMENDMENT|AMENDMENT_TREE_FILLED|VOTE_SCHEDULED,An amendment is formally before the Senate and may shape the final text.
+SUBSTITUTE_AMENDMENT,Substitute amendment pending,Senate,Floor amendments,AMENDMENT_PENDING,AMENDMENT_TREE_FILLED|VOTE_SCHEDULED|PASSED_SENATE,A substitute can replace the underlying text and become the main legislative vehicle.
+AMENDMENT_TREE_FILLED,Amendment tree filled,Senate,Floor amendments,SUBSTITUTE_AMENDMENT|AMENDMENT_PENDING,CLOTURE_FILED|VOTE_SCHEDULED,"Available amendment slots are occupied, limiting further amendments absent consent or a vote."
+CLOTURE_FILED,Cloture filed,Senate,Floor debate,MOTION_TO_PROCEED|AMENDMENT_TREE_FILLED,CLOTURE_INVOKED|CLOTURE_REJECTED|VOTE_SCHEDULED,Leadership has started the Rule XXII process to limit debate after the required interval.
+CLOTURE_INVOKED,Cloture invoked,Senate,Floor debate,CLOTURE_FILED,VOTE_SCHEDULED|PASSED_SENATE,"The Senate voted to limit debate, making final action more likely and timing more predictable."
+CLOTURE_REJECTED,Cloture rejected,Senate,Floor debate,CLOTURE_FILED,MOTION_TO_PROCEED|AMENDMENT_PENDING,"The Senate failed to limit debate, leaving the matter stalled unless leaders negotiate another path."
+VOTE_SCHEDULED,Vote scheduled,Senate,Floor timing,MOTION_TO_PROCEED|AMENDMENT_PENDING|CLOTURE_FILED|CLOTURE_INVOKED,PASSED_SENATE|CLOTURE_INVOKED|CLOTURE_REJECTED,A vote window has been announced; staffing and live coverage should be planned around it.
+PASSED_SENATE,Passed Senate,Senate,Passage,VOTE_SCHEDULED|CLOTURE_INVOKED,HOUSE_MESSAGE|CONFERENCE_REQUESTED|ENROLLED_BILL,The Senate has passed the measure or agreed to a dispositive action.
+PASSED_HOUSE,Passed House,House,Passage,VOTE_SCHEDULED,HOUSE_MESSAGE|CONFERENCE_REQUESTED|ENROLLED_BILL,The House has passed the measure or agreed to a dispositive action.
+CONFERENCE_REQUESTED,Conference requested,Joint,Resolving differences,PASSED_SENATE|PASSED_HOUSE|HOUSE_MESSAGE,CONFEREES_APPOINTED,One chamber is asking for a formal House-Senate conference to resolve differences.
+CONFEREES_APPOINTED,Conferees appointed,Joint,Resolving differences,CONFERENCE_REQUESTED,CONFERENCE_REPORT_FILED,Members have been named to negotiate a conference report.
+CONFERENCE_REPORT_FILED,Conference report filed,Joint,Resolving differences,CONFEREES_APPOINTED,CONFERENCE_REPORT_AGREED|VOTE_SCHEDULED,Negotiators have produced a final compromise text for chamber approval.
+CONFERENCE_REPORT_AGREED,Conference report agreed to,Joint,Resolving differences,CONFERENCE_REPORT_FILED,ENROLLED_BILL,The chamber has adopted the conference report; both chambers must clear it before enrollment.
+ENROLLED_BILL,Enrolled bill,Congress,Enrollment,PASSED_SENATE|PASSED_HOUSE|CONFERENCE_REPORT_AGREED,PRESENTED_PRESIDENT,The final passed text is being prepared for presidential presentation.
+PRESENTED_PRESIDENT,Presented to President,Executive,Presidential action,ENROLLED_BILL,SIGNED_PRESIDENT|VETOED,The enrolled bill has been sent to the President for signature or veto decision.
+SIGNED_PRESIDENT,Signed by President,Executive,Enactment,PRESENTED_PRESIDENT,,The President has signed the measure; it becomes law.
+VETOED,Vetoed,Executive,Presidential action,PRESENTED_PRESIDENT,VETO_OVERRIDE,The President has rejected the measure and returned it or issued a veto message.
+VETO_OVERRIDE,Veto override,Congress,Presidential action,VETOED,SIGNED_PRESIDENT,The chamber is attempting or has completed a constitutionally required two-thirds override vote.
