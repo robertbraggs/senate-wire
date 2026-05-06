@@ -250,3 +250,85 @@ def test_summary_payload_preserves_existing_keys_and_adds_interpretations(monkey
     assert "votes" in payload
     assert "procedure_interpretations" in payload
     assert payload["procedure_interpretations"][0]["status_label"] == "Cloture filed"
+
+
+def make_activity_item(title, sort_datetime, category="Earlier Floor Activity", status="historical"):
+    return main.JoltItem(
+        source="pytest",
+        raw=title,
+        date_label="fixture",
+        time_label="12:00 p.m.",
+        sort_datetime=sort_datetime,
+        category=category,
+        title=title,
+        urgency="monitor",
+        status=status,
+        confidence="high",
+        quality="confirmed",
+        location="Senate floor",
+        building="Capitol",
+        measure=None,
+        takeaway="Activity update.",
+        where_to_be="Senate floor",
+        movement_cue="Monitor.",
+        who_to_watch="Leadership",
+        coverage_note="Monitor.",
+        staff_note="Monitor.",
+        gallery_note="Monitor.",
+        senators_detected=[],
+        coverage_target="floor",
+        press_availability="",
+        best_window="",
+        event_type="floor_action",
+        committee=None,
+        url="fixture://activity",
+        topic="floor",
+    )
+
+
+def test_today_item_appears_in_recent_activity():
+    now = datetime(2026, 5, 6, 15, 0)
+    today_item = make_activity_item("Morning business began", "2026-05-06T10:00:00")
+
+    current, prior = main.recent_activity_buckets([today_item], now)
+
+    assert today_item in current
+    assert prior == []
+
+
+def test_upcoming_scheduled_item_appears_in_recent_activity():
+    now = datetime(2026, 5, 6, 15, 0)
+    upcoming_item = make_activity_item("Senate will convene tomorrow", "2026-05-07T10:00:00", category="Schedule", status="upcoming")
+
+    current, prior = main.recent_activity_buckets([upcoming_item], now)
+
+    assert upcoming_item in current
+    assert prior == []
+
+
+def test_previous_day_item_is_excluded_from_recent_activity():
+    now = datetime(2026, 5, 6, 15, 0)
+    previous_item = make_activity_item("Senate adjourned", "2026-05-05T18:00:00")
+
+    current, _prior = main.recent_activity_buckets([previous_item], now)
+
+    assert previous_item not in current
+
+
+def test_previous_day_item_appears_only_as_last_known_context():
+    now = datetime(2026, 5, 6, 15, 0)
+    previous_item = make_activity_item("Senate adjourned", "2026-05-05T18:00:00")
+
+    current, prior = main.recent_activity_buckets([previous_item], now)
+    rendered = main.render_last_known_context_section(prior, "reporter")
+
+    assert current == []
+    assert prior == [previous_item]
+    assert "Last Known Context" in rendered
+    assert "Showing the latest available prior update for context." in rendered
+
+
+def test_empty_current_state_message_appears_when_nothing_current_exists():
+    rendered = main.section("Recent Activity", [], "reporter", collapsed=True)
+
+    assert "No current Senate floor activity detected." in rendered
