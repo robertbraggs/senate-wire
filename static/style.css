@@ -1,20 +1,35 @@
 /*
 COLOR LOCK:
-Do not change color values unless explicitly requested.
-All new UI must inherit existing Senate JOLT colors.
+Senate JOLT uses Senate Radio-TV Gallery-inspired colors.
+Do not alter color values unless explicitly requested.
 */
+
+:root {
+    --color-primary-navy: #12355B;
+    --color-deep-senate-navy: #0B1F33;
+    --color-accent-blue: #1D5D9B;
+    --color-light-background: #F5F7FA;
+    --color-card-background: #FFFFFF;
+    --color-border-gray: #D7DEE8;
+    --color-text-primary: #1F2933;
+    --color-text-muted: #5F6B7A;
+}
 
 body {
     font-family: Inter, Arial, sans-serif;
     margin: 0;
-    background: #f2f5fb;
-    color: #111827;
+    background: var(--color-light-background);
+    color: var(--color-text-primary);
 }
 
 .container {
     max-width: 960px;
     margin: 0 auto;
     padding: 32px 24px;
+}
+
+h2 {
+    color: var(--color-primary-navy);
 }
 
 .hero {
@@ -24,7 +39,7 @@ body {
     align-items: flex-start;
     gap: 16px;
     padding: 28px;
-    background: #ffffff;
+    background: var(--color-card-background);
     border-radius: 20px;
     box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
     margin-bottom: 24px;
@@ -32,6 +47,7 @@ body {
 
 .hero h1 {
     margin: 0 0 12px;
+    color: var(--color-primary-navy);
     font-size: 2.7rem;
 }
 
@@ -39,13 +55,13 @@ body {
     margin: 0 0 18px;
     max-width: 620px;
     line-height: 1.7;
-    color: #4b5563;
+    color: var(--color-text-muted);
 }
 
 .button {
     display: inline-block;
-    background: #0f6dff;
-    color: white;
+    background: var(--color-primary-navy);
+    color: var(--color-card-background);
     text-decoration: none;
     padding: 12px 22px;
     border-radius: 999px;
@@ -53,7 +69,7 @@ body {
 }
 
 .meta {
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-size: 0.95rem;
     margin-top: 10px;
 }
@@ -64,11 +80,11 @@ body {
 }
 
 .alert-card {
-    background: white;
+    background: var(--color-card-background);
     border-radius: 18px;
     padding: 24px;
     box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--color-border-gray);
 }
 
 .alert-card-top {
@@ -85,14 +101,15 @@ body {
     align-items: center;
     padding: 6px 12px;
     border-radius: 999px;
-    background: rgba(15, 109, 255, 0.1);
-    color: #0f6dff;
+    background: var(--color-light-background);
+    color: var(--color-accent-blue);
     font-size: 0.84rem;
     font-weight: 700;
     letter-spacing: 0.02em;
 }
 
 .alert-title {
+    color: var(--color-primary-navy);
     font-size: 1.2rem;
     font-weight: 700;
     margin: 0;
@@ -101,17 +118,17 @@ body {
 .alert-explanation {
     margin-bottom: 16px;
     line-height: 1.7;
-    color: #374151;
+    color: var(--color-text-primary);
 }
 
 .key-action {
-    background: linear-gradient(135deg, #0f6dff 0%, #3b82f6 100%);
-    color: white;
+    background: var(--color-primary-navy);
+    color: var(--color-card-background);
     border: none;
 }
 
 .key-action h2 {
-    color: white;
+    color: var(--color-card-background);
     margin-bottom: 12px;
 }
 
@@ -133,6 +150,7 @@ body {
 }
 
 .note-list strong {
+    color: var(--color-primary-navy);
     display: block;
     margin-bottom: 6px;
 }
@@ -140,28 +158,28 @@ body {
 .alert-details {
     margin-bottom: 16px;
     padding: 14px 16px;
-    background: #f9fafb;
+    background: var(--color-light-background);
     border-radius: 14px;
-    border: 1px solid #e5e7eb;
-    color: #1f2937;
+    border: 1px solid var(--color-border-gray);
+    color: var(--color-text-primary);
 }
 
 blockquote {
     margin: 0 0 16px;
     padding: 16px 18px;
-    background: #f8fafc;
-    border-left: 4px solid #0f6dff;
-    color: #1f2937;
+    background: var(--color-light-background);
+    border-left: 4px solid var(--color-accent-blue);
+    color: var(--color-text-primary);
 }
 
 .alert-contact {
     margin-bottom: 16px;
-    color: #334155;
+    color: var(--color-text-primary);
 }
 
 .alert-meta {
     margin: 0 0 14px;
-    color: #4b5563;
+    color: var(--color-text-muted);
     font-size: 0.92rem;
 }
 
@@ -170,12 +188,12 @@ blockquote {
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 12px;
-    color: #6b7280;
+    color: var(--color-text-muted);
     font-size: 0.95rem;
 }
 
 .alert-footer a {
-    color: #0f6dff;
+    color: var(--color-accent-blue);
     text-decoration: none;
 }
 
@@ -184,11 +202,11 @@ blockquote {
 }
 
 .empty-state {
-    background: #ffffff;
+    background: var(--color-card-background);
     padding: 28px;
     border-radius: 18px;
-    border: 1px dashed #d1d5db;
-    color: #374151;
+    border: 1px dashed var(--color-border-gray);
+    color: var(--color-text-primary);
 }
 
 @media (max-width: 640px) {
