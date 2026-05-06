@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import init_db
 from app.refresher import SourceRefreshManager
 from app.source_cache import get_source_snapshot, get_source_text, source_status_summary
+from app.security import sanitize_error_message, sanitize_url
 from app.alerts import (
     allow_signup,
     confirm_subscriber,
@@ -71,6 +72,7 @@ def service_worker():
 
 
 COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly/2026/04/27?q=%7B%22chamber%22%3A%22Senate%22%7D"
+SOURCE_STATUS_ALIASES = {"daily_press": "congressional_reporters"}
 CONGRESS_API_BASE = "https://api.congress.gov/v3"
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY")
 
@@ -310,9 +312,23 @@ def require_admin_token(request: Request, token: str = "") -> None:
         raise HTTPException(status_code=401, detail="Admin token required")
 
 
+def public_source_status() -> Dict[str, str]:
+    return {key: sanitize_error_message(value) if str(value).lower().startswith("error") else str(value) for key, value in SOURCE_STATUS.items()}
+
+
 def current_cache_status() -> Dict[str, Any]:
+    snapshots = source_status_summary()
+    public_snapshots = {
+        name: {
+            "fetched_at": status.get("fetched_at"),
+            "status": status.get("status"),
+            "error_message": sanitize_error_message(status.get("error_message")) if status.get("error_message") else None,
+            "stale": bool(status.get("stale")),
+        }
+        for name, status in snapshots.items()
+    }
     return {
-        "snapshots": source_status_summary(),
+        "snapshots": public_snapshots,
         "refresher": getattr(getattr(app, "state", None), "source_refresh_manager", None).status() if getattr(getattr(app, "state", None), "source_refresh_manager", None) else {},
     }
 
@@ -322,9 +338,14 @@ def fetch_url(url: str, timeout: int = 20) -> str:
         text = get_source_text(source_name)
         if text:
             snapshot = get_source_snapshot(source_name) or {}
-            SOURCE_STATUS[source_name] = "loaded from cache" if snapshot.get("status") == "ok" else "stale cache"
+            status_value = "loaded from cache" if snapshot.get("status") == "ok" else "stale cache"
+            SOURCE_STATUS[source_name] = status_value
+            if source_name in SOURCE_STATUS_ALIASES:
+                SOURCE_STATUS[SOURCE_STATUS_ALIASES[source_name]] = status_value
             return text
         SOURCE_STATUS[source_name] = "cache empty"
+        if source_name in SOURCE_STATUS_ALIASES:
+            SOURCE_STATUS[SOURCE_STATUS_ALIASES[source_name]] = "cache empty"
         return ""
     return ""
 
@@ -353,7 +374,7 @@ def fetch_forward_schedule_sources() -> Dict[str, Any]:
                 loaded.append({"key": key, "url": url})
                 texts.append({"key": key, "url": url, "text": text[:20000]})
         except Exception as exc:
-            errors[key] = str(exc)
+            errors[key] = sanitize_error_message(exc)
     return {"loaded_sources": loaded, "texts": texts, "errors": errors}
 
 
@@ -1096,7 +1117,7 @@ def extract_congressional_reporters_text() -> str:
         soup = BeautifulSoup(fetch_url(CONGRESSIONAL_REPORTERS_URL), "html.parser")
         SOURCE_STATUS["congressional_reporters"] = "loaded"
     except Exception as exc:
-        SOURCE_STATUS["congressional_reporters"] = f"error: {exc}"
+        SOURCE_STATUS["congressional_reporters"] = "error: source unavailable"
         return ""
 
     remove_noise(soup)
@@ -1460,19 +1481,25 @@ def parse_measure_for_congress_api(measure: Optional[str]) -> Optional[Tuple[int
     return None
 
 
+def congress_api_source_name(path: str) -> str:
+    safe = path.strip("/").replace("/", "_").replace("-", "_")
+    return f"congress_api_{safe}"[:180]
+
+
 def congress_api_get(path: str) -> Dict[str, Any]:
     if not CONGRESS_API_KEY:
         return {}
-    if path.startswith("/committee-meeting/"):
-        snapshot = get_source_snapshot("congress_committee_meetings")
-        if snapshot and snapshot.get("payload"):
-            text = snapshot["payload"].get("text", "")
-            try:
-                SOURCE_STATUS["congress_api"] = "loaded from cache" if snapshot.get("status") == "ok" else "stale cache"
-                return json.loads(text) if text else {}
-            except json.JSONDecodeError:
-                SOURCE_STATUS["congress_api"] = "cached JSON parse error"
-        SOURCE_STATUS["congress_api"] = "cache empty"
+    source_name = "congress_committee_meetings" if path.startswith("/committee-meeting/") else congress_api_source_name(path)
+    snapshot = get_source_snapshot(source_name)
+    if snapshot and snapshot.get("payload"):
+        text = snapshot["payload"].get("text", "")
+        try:
+            SOURCE_STATUS["congress_api"] = "loaded from cache" if snapshot.get("status") == "ok" else "stale cache"
+            return json.loads(text) if text else {}
+        except json.JSONDecodeError:
+            SOURCE_STATUS["congress_api"] = "cached JSON parse error"
+            return {}
+    SOURCE_STATUS["congress_api"] = "cache empty"
     return {}
 
 def strip_html_text(text: str) -> str:
@@ -1492,7 +1519,7 @@ def fetch_congress_bill_info(measure: Optional[str]) -> Dict[str, Optional[str]]
     search_url = f"https://www.congress.gov/search?q=%7B%22search%22%3A%22{measure}%22%7D"
     parsed = parse_measure_for_congress_api(measure)
     if not parsed or not CONGRESS_API_KEY:
-        return {"congress_url": search_url}
+        return {"congress_url": sanitize_url(search_url)}
     congress, bill_type, bill_number = parsed
     try:
         bill = congress_api_get(f"/bill/{congress}/{bill_type}/{bill_number}").get("bill", {})
@@ -1509,12 +1536,12 @@ def fetch_congress_bill_info(measure: Optional[str]) -> Dict[str, Optional[str]]
             "congress_official_context": (latest.get("actionDate") or latest.get("date")),
             "congress_policy_area": (bill.get("policyArea") or {}).get("name"),
             "congress_sponsors": sponsors or None,
-            "congress_url": bill.get("url") or search_url,
+            "congress_url": sanitize_url(bill.get("url") or search_url),
             "congress_summary": summary,
         }
     except Exception:
         SOURCE_STATUS["congress_api"] = "Congress.gov API error"
-        return {"congress_url": search_url}
+        return {"congress_url": sanitize_url(search_url)}
 
 
 def infer_coverage_target(raw: str, senators: List[str], committee: Optional[str], measure: Optional[str]) -> Optional[str]:
@@ -1846,7 +1873,7 @@ def fetch_ebb_items() -> List[JoltItem]:
         soup = BeautifulSoup(fetch_url(EBB_URL, timeout=15), "html.parser")
         SOURCE_STATUS["ebb"] = "loaded"
     except Exception as exc:
-        SOURCE_STATUS["ebb"] = f"error: {exc}"
+        SOURCE_STATUS["ebb"] = "error: source unavailable"
         return [
             JoltItem(
                 source="EBB",
@@ -3893,7 +3920,7 @@ def dashboard(
         return page
 
     except Exception as exc:
-        return HTMLResponse(f"<h1>{APP_NAME} error</h1><p>{html.escape(str(exc))}</p>", status_code=500)
+        return HTMLResponse(f"<h1>{APP_NAME} error</h1><p>{html.escape(sanitize_error_message(exc))}</p>", status_code=500)
 
 
 async def _read_signup_payload(request: Request) -> Dict[str, Any]:
@@ -3986,7 +4013,7 @@ def summary_endpoint():
 
     return {
         "app": APP_NAME,
-        "source_status": SOURCE_STATUS,
+        "source_status": public_source_status(),
         "cache_status": current_cache_status(),
         "total": len(items),
         "votes": len(groups.get("Votes", [])),
@@ -4009,7 +4036,7 @@ def debug_raw(request: Request, token: str = Query("")):
     return {
         "congressional_reporters_source": CONGRESSIONAL_REPORTERS_URL,
         "ebb_source": EBB_URL,
-        "source_status": SOURCE_STATUS,
+        "source_status": public_source_status(),
         "cache_status": current_cache_status(),
         "floor_preview": floor_text[:2500],
         "floor_raw": split_floor_events(floor_text),
@@ -4046,6 +4073,6 @@ def health():
         "app": APP_NAME,
         "congressional_reporters": CONGRESSIONAL_REPORTERS_URL,
         "ebb": EBB_URL,
-        "source_status": SOURCE_STATUS,
+        "source_status": public_source_status(),
         "cache_status": current_cache_status(),
     }

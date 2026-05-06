@@ -1,3 +1,10 @@
+"""Legacy synchronous scraper.
+
+The production app now uses app.refresher.SourceRefreshManager and app.source_cache
+for async background source refreshes and last-known-good snapshots. This module is
+kept only for historical/manual maintenance workflows and is not imported by
+user-facing routes. Do not add new fetch implementations here.
+"""
 import hashlib
 from datetime import datetime
 import requests
