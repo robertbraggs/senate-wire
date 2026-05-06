@@ -2,7 +2,6 @@ import hashlib
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
-from app.parser import normalize_line, is_generic_line
 from app.database import SessionLocal, SourceSnapshot
 
 SOURCES = [
