@@ -31,7 +31,10 @@
       const doc = new DOMParser().parseFromString(text, "text/html");
       const nextMain = doc.getElementById("main-content");
       const currentMain = document.getElementById("main-content");
-      if (nextMain && currentMain) currentMain.innerHTML = nextMain.innerHTML;
+      if (nextMain && currentMain) {
+        currentMain.innerHTML = nextMain.innerHTML;
+        setupEmailSignup();
+      }
 
       const nextAlert = doc.querySelector(".alert-banner");
       const currentAlert = document.querySelector(".alert-banner");
@@ -111,6 +114,38 @@
     });
   }
 
+
+  function setupEmailSignup() {
+    const form = document.getElementById("alerts-signup-form");
+    const message = document.getElementById("alerts-signup-message");
+    if (!form || !message) return;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      message.textContent = "";
+      message.className = "signup-message";
+      const email = (form.email && form.email.value || "").trim();
+      if (!email || !form.email.checkValidity()) {
+        message.textContent = "Please enter a valid email address.";
+        message.classList.add("error");
+        return;
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: "POST",
+          headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "fetch" },
+          body: new URLSearchParams(new FormData(form))
+        });
+        const data = await response.json();
+        message.textContent = data.message || (response.ok ? "You’re signed up for Senate JOLT alerts." : "Please enter a valid email address.");
+        message.classList.add(response.ok && data.ok !== false ? "success" : "error");
+        if (response.ok && data.ok !== false) form.reset();
+      } catch (_) {
+        message.textContent = "Please enter a valid email address.";
+        message.classList.add("error");
+      }
+    });
+  }
+
   function setupServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
     window.addEventListener("load", () => {
@@ -123,6 +158,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     setupServiceWorker();
     setupNotifications();
+    setupEmailSignup();
     setLastUpdated(new Date(document.body.dataset.lastUpdated || Date.now()));
     const refresh = document.getElementById("refresh-button");
     if (refresh) refresh.addEventListener("click", () => refreshLiveData(true));
