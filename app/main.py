@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Dict, Tuple, Any
@@ -6,14 +7,14 @@ import html
 import json
 import os
 from pathlib import Path
-import requests
 from urllib.parse import parse_qs
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from functools import lru_cache
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
+from app.refresher import SourceRefreshManager
+from app.source_cache import get_source_snapshot, get_source_text, source_status_summary
 from app.alerts import (
     allow_signup,
     confirm_subscriber,
@@ -38,8 +39,22 @@ SENATE_DEMS_FLOOR_URL = "https://www.democrats.senate.gov/floor"
 EXECUTIVE_CALENDAR_URL = "https://www.senate.gov/legislative/LIS/executive_calendar/xcalv.pdf"
 FLOOR_ACTIVITY_URL = "https://www.senate.gov/legislative/floor_activity_pail.htm"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 
-app = FastAPI(title=APP_NAME, version="8.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    manager = SourceRefreshManager()
+    app.state.source_refresh_manager = manager
+    await manager.start()
+    try:
+        yield
+    finally:
+        await manager.stop()
+
+
+app = FastAPI(title=APP_NAME, version="8.2.0", lifespan=lifespan)
 init_db()
 BASE_DIR = Path(__file__).resolve().parent.parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
@@ -238,6 +253,17 @@ class NotificationEvent:
     dedupe_key: str
 
 
+SOURCE_NAME_BY_URL = {
+    CONGRESSIONAL_REPORTERS_URL: "daily_press",
+    EBB_URL: "ebb",
+    SENATE_DEMS_SCHEDULE_URL: "senate_dems_schedule",
+    FLOOR_ACTIVITY_URL: "floor_schedule",
+    RADIO_TV_URL: "radio_tv",
+    SENATE_DEMS_FLOOR_URL: "senate_dems_floor",
+    EXECUTIVE_CALENDAR_URL: "executive_calendar",
+}
+
+
 SOURCE_STATUS = {
     "congressional_reporters": "not loaded",
     "ebb": "not loaded",
@@ -273,14 +299,34 @@ def clean(text: str) -> str:
     return " ".join((text or "").replace("\xa0", " ").split()).strip()
 
 
+
+def require_admin_token(request: Request, token: str = "") -> None:
+    expected = os.getenv("ADMIN_TOKEN") or ADMIN_TOKEN
+    if not expected:
+        raise HTTPException(status_code=404, detail="Not found")
+    auth = request.headers.get("authorization", "")
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if token != expected and bearer != expected:
+        raise HTTPException(status_code=401, detail="Admin token required")
+
+
+def current_cache_status() -> Dict[str, Any]:
+    return {
+        "snapshots": source_status_summary(),
+        "refresher": getattr(getattr(app, "state", None), "source_refresh_manager", None).status() if getattr(getattr(app, "state", None), "source_refresh_manager", None) else {},
+    }
+
 def fetch_url(url: str, timeout: int = 20) -> str:
-    r = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 TheSenateJOLT/7.1"},
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    return r.text
+    source_name = SOURCE_NAME_BY_URL.get(url)
+    if source_name:
+        text = get_source_text(source_name)
+        if text:
+            snapshot = get_source_snapshot(source_name) or {}
+            SOURCE_STATUS[source_name] = "loaded from cache" if snapshot.get("status") == "ok" else "stale cache"
+            return text
+        SOURCE_STATUS[source_name] = "cache empty"
+        return ""
+    return ""
 
 
 def fetch_forward_schedule_sources() -> Dict[str, Any]:
@@ -1414,14 +1460,20 @@ def parse_measure_for_congress_api(measure: Optional[str]) -> Optional[Tuple[int
     return None
 
 
-@lru_cache(maxsize=256)
 def congress_api_get(path: str) -> Dict[str, Any]:
     if not CONGRESS_API_KEY:
-        raise RuntimeError("missing key")
-    url = f"{CONGRESS_API_BASE}{path}"
-    r = requests.get(url, params={"api_key": CONGRESS_API_KEY, "format": "json"}, timeout=10)
-    r.raise_for_status()
-    return r.json()
+        return {}
+    if path.startswith("/committee-meeting/"):
+        snapshot = get_source_snapshot("congress_committee_meetings")
+        if snapshot and snapshot.get("payload"):
+            text = snapshot["payload"].get("text", "")
+            try:
+                SOURCE_STATUS["congress_api"] = "loaded from cache" if snapshot.get("status") == "ok" else "stale cache"
+                return json.loads(text) if text else {}
+            except json.JSONDecodeError:
+                SOURCE_STATUS["congress_api"] = "cached JSON parse error"
+        SOURCE_STATUS["congress_api"] = "cache empty"
+    return {}
 
 def strip_html_text(text: str) -> str:
     return clean(BeautifulSoup(text or "", "html.parser").get_text(" ", strip=True))
@@ -3909,7 +3961,8 @@ def alerts_unsubscribe(token: str = Query("")):
 
 
 @app.get("/debug/alerts")
-def debug_alerts():
+def debug_alerts(request: Request, token: str = Query("")):
+    require_admin_token(request, token)
     return alerts_debug_summary()
 
 
@@ -3934,6 +3987,7 @@ def summary_endpoint():
     return {
         "app": APP_NAME,
         "source_status": SOURCE_STATUS,
+        "cache_status": current_cache_status(),
         "total": len(items),
         "votes": len(groups.get("Votes", [])),
         "floor_action": len(groups.get("Floor Action", [])),
@@ -3946,7 +4000,8 @@ def summary_endpoint():
 
 
 @app.get("/debug/raw")
-def debug_raw():
+def debug_raw(request: Request, token: str = Query("")):
+    require_admin_token(request, token)
     floor_text = extract_congressional_reporters_text()
     ebb_items = fetch_ebb_items()
     forward_context = build_forward_schedule_context()
@@ -3955,6 +4010,7 @@ def debug_raw():
         "congressional_reporters_source": CONGRESSIONAL_REPORTERS_URL,
         "ebb_source": EBB_URL,
         "source_status": SOURCE_STATUS,
+        "cache_status": current_cache_status(),
         "floor_preview": floor_text[:2500],
         "floor_raw": split_floor_events(floor_text),
         "ebb_items": [asdict(x) for x in ebb_items],
@@ -3991,4 +4047,5 @@ def health():
         "congressional_reporters": CONGRESSIONAL_REPORTERS_URL,
         "ebb": EBB_URL,
         "source_status": SOURCE_STATUS,
+        "cache_status": current_cache_status(),
     }

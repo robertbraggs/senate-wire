@@ -16,7 +16,7 @@ def classify_event(line):
         return "cloture_vote"
     if "now voting" in l:
         return "vote_in_progress"
-    if "vote of" in l:
+    if "vote of" in l or "by a vote" in l or "roll call vote" in l:
         return "vote_result"
     if "discharge" in l:
         return "discharge_vote"

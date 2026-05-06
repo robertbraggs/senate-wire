@@ -1,10 +1,11 @@
+import os
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, DateTime, Text, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATABASE_URL = f"sqlite:///{BASE_DIR / 'data' / 'senate_wire.db'}"
+DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('SENATE_WIRE_DATABASE_URL') or f"sqlite:///{BASE_DIR / 'data' / 'senate_wire.db'}"
 
 engine = create_engine(DATABASE_URL, connect_args={'check_same_thread': False})
 SessionLocal = sessionmaker(bind=engine)
@@ -19,6 +20,18 @@ class SourceSnapshot(Base):
     content_hash = Column(String, nullable=False)
     extracted_text = Column(Text, nullable=False)
     checked_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class CachedSource(Base):
+    __tablename__ = 'cached_sources'
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_name = Column(String, unique=True, nullable=False, index=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    status = Column(String, default='unknown', nullable=False)
+    payload_json = Column(Text, default='{}', nullable=False)
+    error_message = Column(Text, nullable=True)
+    stale = Column(Boolean, default=False, nullable=False)
 
 
 class Alert(Base):
@@ -102,3 +115,19 @@ def init_db() -> None:
                 if column not in existing_snapshot_columns:
                     column_type = 'TEXT' if column == 'extracted_text' else 'VARCHAR'
                     conn.execute(text(f'ALTER TABLE source_snapshots ADD COLUMN {column} {column_type}'))
+
+    if 'cached_sources' in inspector.get_table_names():
+        existing_cache_columns = [column['name'] for column in inspector.get_columns('cached_sources')]
+        needed_cache_columns = {
+            'source_name': 'VARCHAR',
+            'fetched_at': 'DATETIME',
+            'status': 'VARCHAR',
+            'payload_json': 'TEXT',
+            'error_message': 'TEXT',
+            'stale': 'BOOLEAN',
+        }
+        with engine.begin() as conn:
+            for column, column_type in needed_cache_columns.items():
+                if column not in existing_cache_columns:
+                    conn.execute(text(f'ALTER TABLE cached_sources ADD COLUMN {column} {column_type}'))
+
