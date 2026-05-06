@@ -3,6 +3,7 @@ from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Dict, Tuple, Any
 import re
 import html
+import json
 import os
 from pathlib import Path
 import requests
@@ -23,19 +24,19 @@ EXECUTIVE_CALENDAR_URL = "https://www.senate.gov/legislative/LIS/executive_calen
 FLOOR_ACTIVITY_URL = "https://www.senate.gov/legislative/floor_activity_pail.htm"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 
-app = FastAPI(title=APP_NAME, version="8.0.0")
+app = FastAPI(title=APP_NAME, version="8.1.0")
 BASE_DIR = Path(__file__).resolve().parent.parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 @app.get("/manifest.json", include_in_schema=False)
 def manifest():
-    return FileResponse(BASE_DIR / "manifest.json", media_type="application/manifest+json")
+    return FileResponse(BASE_DIR / "static" / "manifest.json", media_type="application/manifest+json")
 
 
 @app.get("/service-worker.js", include_in_schema=False)
 def service_worker():
-    return FileResponse(BASE_DIR / "service-worker.js", media_type="application/javascript")
+    return FileResponse(BASE_DIR / "static" / "service-worker.js", media_type="application/javascript")
 
 
 COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly/2026/04/27?q=%7B%22chamber%22%3A%22Senate%22%7D"
@@ -205,6 +206,19 @@ class SignalItem:
     total_score: float
     status: str
 
+
+@dataclass(kw_only=True)
+class NotificationEvent:
+    id: str
+    title: str
+    body: str
+    urgency: str
+    coverage_type: str
+    timestamp: str
+    source: str
+    url: str
+    expires_at: str
+    dedupe_key: str
 
 
 SOURCE_STATUS = {
@@ -3098,6 +3112,260 @@ def to_signal_items(items: List[JoltItem]) -> List[SignalItem]:
         ))
     return out
 
+
+def _safe_event_time_fragment(value: str) -> str:
+    text = clean(value or "").lower()
+    text = re.sub(r"[^a-z0-9:.-]+", "-", text).strip("-")
+    return text or "rolling"
+
+
+def notification_dedupe_key(source: str, coverage_type: str, title: str, event_time: str) -> str:
+    return "|".join([
+        clean(source or "public_source").lower(),
+        clean(coverage_type or "coverage").lower(),
+        clean(title or "signal").lower(),
+        _safe_event_time_fragment(event_time),
+    ])
+
+
+def make_notification_event(title: str, body: str, urgency: str, coverage_type: str, source: str, url: str, event_time: str, now: datetime, ttl_minutes: int = 180) -> NotificationEvent:
+    dedupe_key = notification_dedupe_key(source, coverage_type, title, event_time)
+    safe_id = re.sub(r"[^a-z0-9-]+", "-", dedupe_key.lower()).strip("-")[:140]
+    return NotificationEvent(
+        id=safe_id,
+        title=title,
+        body=body,
+        urgency=urgency,
+        coverage_type=coverage_type,
+        timestamp=now.isoformat(timespec="seconds"),
+        source=source,
+        url=url,
+        expires_at=(now + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds"),
+        dedupe_key=dedupe_key,
+    )
+
+
+def _parse_schedule_datetime(date_text: str, time_text: str) -> Optional[datetime]:
+    if not date_text or not time_text:
+        return None
+    try:
+        d = date.fromisoformat(str(date_text))
+    except ValueError:
+        d = parse_date(str(date_text))
+    t = parse_time(str(time_text))
+    if not d or not t:
+        return None
+    return datetime.combine(d, t)
+
+
+def _minutes_until(dt: Optional[datetime], now: datetime) -> Optional[float]:
+    if not dt:
+        return None
+    return (dt - now).total_seconds() / 60
+
+
+def explain_vote_type(vote_text: str) -> str:
+    text = clean(vote_text).lower()
+    if "adoption" in text or "adopt" in text:
+        return "Adoption sets procedural terms or authorizes consideration."
+    if "cloture" in text:
+        return "If cloture is invoked, debate is limited and the Senate moves toward final disposition."
+    if "confirmation" in text or "confirm" in text:
+        return "Confirmation is final Senate action on a nomination."
+    if "passage" in text or "pass" in text:
+        return "Passage is final Senate action on a measure before further House or presidential steps."
+    return "Monitor the floor and public vote sources for the next procedural step."
+
+
+def _vote_underway(items: List[JoltItem]) -> Optional[JoltItem]:
+    for item in items:
+        text = f"{item.title} {item.raw} {item.vote_status or ''}".lower()
+        if item.status != "historical" and ("vote underway" in text or "now voting" in text):
+            return item
+    return None
+
+
+def build_notification_events(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> List[NotificationEvent]:
+    now = now or datetime.now()
+    events: List[NotificationEvent] = []
+    schedule_context = (forward_context or {}).get("schedule_context", {})
+    vote_block = schedule_context.get("vote_block", {}) or {}
+    vote_block_label = canonical_vote_block_time(schedule_context) if schedule_context else ""
+    vote_dt = _parse_schedule_datetime(vote_block.get("date", ""), vote_block_label)
+    vote_minutes = _minutes_until(vote_dt, now)
+    vote_title = f"Vote block expected at {vote_block_label}" if vote_block_label else "Vote block expected"
+    vote_body = "Expected votes: " + "; ".join(schedule_context.get("expected_votes", [])[:3]) if schedule_context.get("expected_votes") else "Monitor Senate floor and roll call vote sources."
+
+    underway = _vote_underway(items)
+    if underway:
+        event_time = underway.sort_datetime or underway.time_label or now.isoformat(timespec="minutes")
+        events.append(make_notification_event("Vote underway", underway.raw or "A Senate vote is underway.", "high", "vote_underway", underway.source or "Public Senate source", underway.url or FLOOR_ACTIVITY_URL, event_time, now, ttl_minutes=90))
+
+    if vote_block and vote_minutes is not None and 0 <= vote_minutes <= 60:
+        events.append(make_notification_event(vote_title, vote_body, "high", "vote_block_within_60", schedule_context.get("source_label", "Public schedule source"), schedule_context.get("source_url", CONGRESSIONAL_REPORTERS_URL), vote_dt.isoformat(timespec="minutes"), now, ttl_minutes=120))
+    elif vote_block and vote_dt and vote_dt.date() == now.date():
+        events.append(make_notification_event(vote_title, vote_body, "medium", "expected_vote_block_today", schedule_context.get("source_label", "Public schedule source"), schedule_context.get("source_url", CONGRESSIONAL_REPORTERS_URL), vote_dt.isoformat(timespec="minutes"), now, ttl_minutes=240))
+
+    for item in items:
+        text = f"{item.title} {item.raw} {item.action_line}".lower()
+        event_time = item.sort_datetime or item.time_label or now.isoformat(timespec="minutes")
+        item_dt = None
+        if item.sort_datetime:
+            try:
+                item_dt = datetime.fromisoformat(item.sort_datetime)
+            except ValueError:
+                item_dt = None
+        minutes = _minutes_until(item_dt, now)
+        if item.source == "EBB" and item.status != "historical":
+            events.append(make_notification_event("New EBB media event posted", item.title or item.raw or "A media event was posted on EBB.", "high", "ebb_media_event", "EBB", item.url or EBB_URL, event_time, now, ttl_minutes=240))
+        if item.category == "Committee Meetings & Hearings" and minutes is not None and 0 <= minutes <= 120:
+            events.append(make_notification_event("New committee hearing within 2 hours", item.title or item.raw or "Check committee schedule.", "medium", "committee_hearing_within_2", item.source or "Committee schedule", item.url or COMMITTEE_SCHEDULE_URL, event_time, now, ttl_minutes=180))
+        if "cloture filed" in text and item.status != "historical":
+            events.append(make_notification_event("Cloture filed — future vote likely", item.title or item.raw or "Cloture was filed.", "high", "cloture_filed", item.source or "Public Senate source", item.url or FLOOR_ACTIVITY_URL, event_time, now, ttl_minutes=1440))
+
+    # Keep notification set focused on high-value browser-notification signals.
+    by_key: Dict[str, NotificationEvent] = {}
+    for event in events:
+        by_key[event.dedupe_key] = event
+    return list(by_key.values())
+
+
+def build_alert_signals(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    now = now or datetime.now()
+    schedule_context = (forward_context or {}).get("schedule_context", {})
+    vote_block = schedule_context.get("vote_block", {}) or {}
+    vote_block_label = canonical_vote_block_time(schedule_context) if schedule_context else ""
+    vote_dt = _parse_schedule_datetime(vote_block.get("date", ""), vote_block_label)
+    vote_minutes = _minutes_until(vote_dt, now)
+    alerts: List[Dict[str, Any]] = []
+
+    if _vote_underway(items):
+        alerts.append({"title": "Vote underway", "body": "Monitor the floor and roll call vote sources now.", "urgency": "high", "coverage_type": "vote_underway"})
+    if vote_block and vote_minutes is not None and 0 <= vote_minutes <= 60:
+        alerts.append({"title": f"Vote block expected at {vote_block_label}", "body": "Vote block is inside the next hour.", "urgency": "high", "coverage_type": "vote_block_within_60"})
+    elif vote_block and vote_dt and vote_dt.date() == now.date():
+        alerts.append({"title": f"Vote block expected at approx. {vote_block_label}" if not vote_block_label.startswith("approx") else f"Vote block expected at {vote_block_label}", "body": "Expected vote block today.", "urgency": "medium", "coverage_type": "expected_vote_block_today"})
+
+    next_convening = schedule_context.get("next_convening", {}) or {}
+    convene_label = next_convening.get("time_label", "")
+    convene_dt = _parse_schedule_datetime(next_convening.get("date", ""), convene_label)
+    convene_minutes = _minutes_until(convene_dt, now)
+    if convene_dt and convene_minutes is not None and 0 <= convene_minutes <= 60:
+        alerts.append({"title": f"Senate convenes at {convene_label}", "body": "Convening is inside the next hour.", "urgency": "medium", "coverage_type": "senate_convening_within_60"})
+
+    for item in items:
+        text = f"{item.title} {item.raw} {item.action_line}".lower()
+        item_dt = None
+        if item.sort_datetime:
+            try:
+                item_dt = datetime.fromisoformat(item.sort_datetime)
+            except ValueError:
+                item_dt = None
+        minutes = _minutes_until(item_dt, now)
+        if item.source == "EBB" and item.status != "historical":
+            alerts.append({"title": "New EBB media event posted", "body": item.title or item.raw or "Check EBB for the posted event.", "urgency": "high", "coverage_type": "ebb_media_event"})
+        if item.category == "Committee Meetings & Hearings" and minutes is not None and 0 <= minutes <= 120:
+            alerts.append({"title": "New committee hearing within 2 hours", "body": item.title or item.raw or "Check committee schedule.", "urgency": "medium", "coverage_type": "committee_hearing_within_2"})
+        if "cloture filed" in text and item.status != "historical":
+            alerts.append({"title": "Cloture filed — future vote likely", "body": item.title or item.raw or "Monitor future floor action.", "urgency": "high", "coverage_type": "cloture_filed"})
+
+    seen = set()
+    deduped = []
+    for alert in alerts:
+        key = (alert.get("coverage_type"), alert.get("title"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(alert)
+    return deduped[:5]
+
+
+def render_alert_banner(alerts: List[Dict[str, Any]]) -> str:
+    if not alerts:
+        return ""
+    primary = alerts[0]
+    more = f" <span>{len(alerts) - 1} more signal{'s' if len(alerts) != 2 else ''}</span>" if len(alerts) > 1 else ""
+    return f"""
+    <div class="alert-banner" role="status" aria-live="polite">
+        <strong>{html.escape(primary.get('title', 'Live alert'))}</strong>
+        <span>{html.escape(primary.get('body', ''))}</span>{more}
+    </div>
+    """
+
+
+def render_live_vote_mode(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> str:
+    now = now or datetime.now()
+    schedule_context = (forward_context or {}).get("schedule_context", {})
+    vote_block = schedule_context.get("vote_block", {}) or {}
+    vote_block_label = canonical_vote_block_time(schedule_context) if schedule_context else ""
+    vote_dt = _parse_schedule_datetime(vote_block.get("date", ""), vote_block_label)
+    underway = _vote_underway(items)
+    if not underway and not (vote_dt and vote_dt.date() == now.date()):
+        return ""
+    expected_votes = schedule_context.get("expected_votes", []) or []
+    vote_list = "".join(f"<li><strong>{html.escape(v)}</strong><br><span>{html.escape(explain_vote_type(v))}</span></li>" for v in expected_votes) or "<li>Expected vote list pending public posting.</li>"
+    status = "Vote underway" if underway else "Vote block expected today"
+    next_action = explain_vote_type(expected_votes[0]) if expected_votes else "Monitor public floor sources for the next likely action."
+    return f"""
+    <section class="live-vote-mode" aria-label="Live vote mode">
+        <div class="mode-label">LIVE VOTE MODE</div>
+        <div class="live-grid">
+            <div><strong>Current vote status</strong><span>{html.escape(status)}</span></div>
+            <div><strong>Vote block time</strong><span>{html.escape(vote_block_label or 'Timing pending')}</span></div>
+            <div><strong>Coverage timing</strong><span>Be ready before the vote block; monitor as votes start.</span></div>
+            <div><strong>Where to monitor</strong><span>Senate floor, roll call votes, EBB, and Gallery guidance.</span></div>
+        </div>
+        <h3>Expected vote list</h3>
+        <ol>{vote_list}</ol>
+        <p><strong>Next likely action:</strong> {html.escape(next_action)}</p>
+    </section>
+    """
+
+
+def render_quick_link_groups() -> str:
+    pieces = []
+    for index, (group, links) in enumerate(QUICK_LINK_GROUPS.items()):
+        rows = "".join(f"<a href='{html.escape(url)}' target='_blank' rel='noopener'>{html.escape(name)}</a>" for name, url in links)
+        open_attr = " open" if index == 0 else ""
+        pieces.append(f"<details class='link-group'{open_attr}><summary>{html.escape(group)}</summary>{rows}</details>")
+    return "".join(pieces)
+
+
+def pwa_smoke_test() -> Dict[str, Any]:
+    manifest_path = BASE_DIR / "static" / "manifest.json"
+    sw_path = BASE_DIR / "static" / "service-worker.js"
+    manifest_text = manifest_path.read_text() if manifest_path.exists() else ""
+    sw_text = sw_path.read_text() if sw_path.exists() else ""
+    app_js_path = BASE_DIR / "static" / "app.js"
+    app_js_text = app_js_path.read_text() if app_js_path.exists() else ""
+    return {
+        "manifest_loads": manifest_path.exists() and '"name": "The Senate JOLT"' in manifest_text and '"src": "/static/icon.svg"' in manifest_text,
+        "service_worker_registers": sw_path.exists() and "addEventListener(\"fetch\"" in sw_text and "APP_SHELL" in sw_text and "serviceWorker" in app_js_text and "/static/service-worker.js" in app_js_text,
+    }
+
+
+def notification_smoke_test() -> Dict[str, Any]:
+    now = datetime(2026, 5, 11, 16, 45)
+    parsed = parse_forward_floor_schedule("""The Senate will next convene at 3:00pm on Monday, May 11, 2026. At approximately 5:30pm, 2 roll call votes expected. Adoption of Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations. Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination.""", date(2026, 5, 3))
+    forward_context = {"schedule_context": parsed}
+    events = build_notification_events([], forward_context, now)
+    duplicate = events + events
+    recent_keys = set()
+    sent = []
+    for event in duplicate:
+        if event.dedupe_key in recent_keys:
+            continue
+        recent_keys.add(event.dedupe_key)
+        sent.append(event)
+    return {
+        "vote_block_alert_generated": any(a["coverage_type"] == "vote_block_within_60" for a in build_alert_signals([], forward_context, now)),
+        "notification_event_generated_from_expected_vote_block": any(e.coverage_type == "vote_block_within_60" for e in events),
+        "duplicate_notification_suppressed": len(sent) == len(events),
+        "may_11_vote_block_remains_approx_530pm": parsed.get("vote_block", {}).get("time_label") == "approx. 5:30 p.m.",
+        "expected_votes_remain_populated": len(parsed.get("expected_votes", [])) >= 2,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     q: Optional[str] = Query(None),
@@ -3156,14 +3424,18 @@ def dashboard(
 
         today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
-        quick_links = "".join(
-            f"<a href='{html.escape(url)}' target='_blank'>{html.escape(name)}</a>"
-            for name, url in QUICK_LINKS
-        )
+        quick_links = render_quick_link_groups()
 
         status_bar = f"Sources: Congressional Reporters {html.escape(friendly_status('congressional_reporters'))} · EBB {html.escape(friendly_status('ebb'))} · Congress.gov API {html.escape(friendly_status('congress_api'))} · Committee Schedule {html.escape(friendly_status('committee_schedule'))}"
 
         outlook = coverage_outlook(items, groups)
+        alert_signals = build_alert_signals(items, forward_context, now)
+        notification_events = build_notification_events(items, forward_context, now)
+        notification_events_json = html.escape(json.dumps([asdict(event) for event in notification_events]), quote=False)
+        alert_banner = render_alert_banner(alert_signals)
+        live_vote_mode = render_live_vote_mode(items, forward_context, now)
+        last_updated_iso = now.isoformat(timespec="seconds")
+        last_updated_label = now.strftime("%I:%M:%S %p").lstrip("0")
 
         page = f"""
         <!doctype html>
@@ -3174,9 +3446,8 @@ def dashboard(
             <meta name="apple-mobile-web-app-capable" content="yes">
             <meta name="apple-mobile-web-app-title" content="Senate JOLT">
             <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-            <meta name="theme-color" content="#172554">
-            <link rel="manifest" href="/manifest.json">
-            <meta http-equiv="refresh" content="60">
+            <meta name="theme-color" content="#111827">
+            <link rel="manifest" href="/static/manifest.json">
             <style>
                 body {{
                     margin: 0;
@@ -3383,6 +3654,49 @@ def dashboard(
                     padding: 14px;
                     color: #64748b;
                 }}
+
+                *, *::before, *::after {{ box-sizing: border-box; }}
+                html {{ -webkit-text-size-adjust: 100%; }}
+                body {{ overflow-x: hidden; }}
+                a, button, summary {{ touch-action: manipulation; }}
+                .app-header {{ position: sticky; top: 0; z-index: 20; background: #111827; padding: max(14px, env(safe-area-inset-top)) 16px 14px; box-shadow: 0 8px 24px rgba(15, 23, 42, .22); }}
+                .live-controls {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }}
+                .button {{ min-height: 44px; border: 0; border-radius: 999px; padding: 11px 16px; background: #ffffff; color: #111827; font-weight: 800; cursor: pointer; }}
+                .button.secondary {{ background: #fbbf24; color: #111827; }}
+                .last-updated {{ font-size: 14px; opacity: .95; }}
+                .alert-banner {{ position: sticky; top: 0; z-index: 30; display: grid; gap: 4px; padding: 12px 16px; background: #b91c1c; color: #fff; box-shadow: 0 8px 20px rgba(127, 29, 29, .25); }}
+                .alert-banner strong {{ font-size: 17px; }}
+                .offline-warning {{ margin-bottom: 12px; padding: 12px 14px; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 14px; color: #78350f; font-weight: 700; }}
+                main {{ scroll-margin-top: 90px; }}
+                .ticker {{ font-size: 18px; line-height: 1.55; }}
+                .section {{ margin-top: 18px; }}
+                .card, .stat, .outlook, .links, .ticker, .empty {{ overflow-wrap: anywhere; }}
+                .summary, .topgrid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
+                .links {{ display: grid; gap: 10px; }}
+                .link-group {{ border: 1px solid #dbe3ef; border-radius: 14px; background: #fff; overflow: hidden; }}
+                .link-group summary {{ min-height: 48px; padding: 14px 16px; cursor: pointer; font-weight: 800; color: #111827; list-style-position: inside; }}
+                .link-group a {{ min-height: 44px; margin: 0 12px 10px; display: flex; align-items: center; }}
+                .live-vote-mode {{ margin-bottom: 14px; padding: 16px; border-radius: 18px; background: #111827; color: #fff; box-shadow: 0 14px 34px rgba(17, 24, 39, .22); }}
+                .mode-label {{ display: inline-flex; margin-bottom: 12px; padding: 7px 10px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 13px; font-weight: 900; letter-spacing: .08em; }}
+                .live-grid {{ display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }}
+                .live-grid div {{ padding: 12px; border-radius: 12px; background: rgba(255,255,255,.09); }}
+                .live-grid strong, .live-grid span {{ display: block; }}
+                .live-grid strong {{ margin-bottom: 6px; color: #bfdbfe; }}
+                .live-vote-mode li {{ margin-bottom: 10px; line-height: 1.45; }}
+                .live-vote-mode li span {{ color: #dbeafe; }}
+                @media (display-mode: standalone) {{ .app-header {{ padding-top: max(10px, env(safe-area-inset-top)); }} h1 {{ font-size: 25px; }} .sub:first-of-type {{ display: none; }} }}
+                @media(max-width: 760px) {{
+                    header {{ padding: 14px 12px; }}
+                    main {{ padding: 12px; }}
+                    h1 {{ font-size: 26px; }}
+                    h2 {{ font-size: 21px; }}
+                    .sub {{ font-size: 14px; }}
+                    .ticker, .outlook, .card, .stat, .links, .empty {{ border-radius: 16px; padding: 14px; }}
+                    .summary, .topgrid {{ grid-template-columns: 1fr; }}
+                    .live-controls {{ position: sticky; top: 0; }}
+                    .button {{ flex: 1 1 130px; }}
+                }}
+
                 @media(max-width: 760px) {{
                     h1 {{ font-size: 30px; }}
                     form {{
@@ -3401,16 +3715,24 @@ def dashboard(
                 }}
             </style>
         </head>
-        <body>
-            <header>
+        <body data-last-updated="{html.escape(last_updated_iso)}">
+            {alert_banner}
+            <header class="app-header">
                 <div class="wrap">
                     <h1>{APP_NAME}</h1>
                     <div class="sub">{today} · Real-time coverage guidance for congressional reporters</div>
                     <div class="sub">Sources: Congressional Reporters · EBB · Congress.gov · Committee Schedules</div>
+                    <div class="live-controls" role="group" aria-label="Live controls">
+                        <button class="button" type="button" id="refresh-button">Refresh</button>
+                        <button class="button secondary" type="button" id="enable-alerts" hidden>Enable alerts</button>
+                        <span id="last-updated" class="last-updated">Last updated: {html.escape(last_updated_label)}</span>
+                    </div>
                 </div>
             </header>
 
-            <main>
+            <main id="main-content">
+                {live_vote_mode}
+                <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
                 <div class="ticker">
                     <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
 
@@ -3428,7 +3750,7 @@ def dashboard(
 
                 <section class="section"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
 
-                <section class="section"><h2>Active Signals summary</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
+                <section class="section"><h2>Activity Signals</h2><div class='card'><p>{html.escape(ticker_status)} · {html.escape(ticker_why)}</p></div></section>
                                 {section("Senate Floor Activity", groups.get("Schedule", []), view)}
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
                                 <section class="section"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
@@ -3446,13 +3768,8 @@ def dashboard(
                 </div>
                 <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
-            <script>
-                if ("serviceWorker" in navigator) {{
-                    window.addEventListener("load", () => {{
-                        navigator.serviceWorker.register("/service-worker.js");
-                    }});
-                }}
-            </script>
+            <script id="notification-events" type="application/json">{notification_events_json}</script>
+            <script src="/static/app.js"></script>
         </body>
         </html>
         """
@@ -3527,6 +3844,8 @@ def debug_raw():
         "ignored_dates": forward_context.get("ignored_dates", []),
         "rejected_blocks": forward_context.get("rejected_blocks", []),
         "forward_schedule_parser_smoke_test": forward_schedule_parser_smoke_test(),
+        "pwa_smoke_test": pwa_smoke_test(),
+        "notification_smoke_test": notification_smoke_test(),
         "items": [asdict(x) for x in get_all_items()],
     }
 
