@@ -499,3 +499,33 @@ def test_refresh_script_patches_sections_and_preserves_scroll_and_accordions():
     assert "placeholder.dataset.refreshKey" in script
     assert "current.replaceWith(next)" in script
     assert "document.body.innerHTML" not in script
+
+def test_expired_schedule_signals_do_not_count_or_render():
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "vote_block": {"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."},
+        "expected_votes": ["Motion to invoke cloture on Example nomination."],
+        "expected_votes_final": ["Motion to invoke cloture on Example nomination."],
+    }, datetime(2026, 5, 7, 13, 0))
+
+    signals = main.build_coverage_signal_items({}, schedule_context, datetime(2026, 5, 7, 13, 0))
+    rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+
+    assert signals == []
+    assert rendered == '<div hidden data-refresh-key="current-coverage-signals"></div>'
+
+
+def test_next_expected_floor_action_omits_expired_pro_forma_and_promotes_vote_window():
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."],
+        "source_label": "Public schedule source",
+    }, datetime(2026, 5, 7, 10, 45))
+
+    rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
+
+    assert "May 7 · 10:00 a.m." not in rendered
+    assert "Senate next convenes:</strong> May 11 · 3:00 p.m." in rendered
+    assert "Next expected floor vote window:</strong> May 11 · approx. 5:30 p.m." in rendered
+    assert "Warsh" in rendered

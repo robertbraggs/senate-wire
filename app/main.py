@@ -424,7 +424,7 @@ def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
 
 
 
-def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
+def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime] = None) -> Dict[str, Any]:
     cleaned = clean(text or "")
     blocks = [clean(b) for b in re.split(r"\n{2,}", text or "") if clean(b)]
     window_end = today + timedelta(days=14)
@@ -809,7 +809,7 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         vote_block_time_source = "text_extracted"
         vote_block_extraction_method = "final_time_guardrail"
 
-    return {
+    schedule_context = {
         "pro_formas": pro_formas[:6],
         "next_convening": {k: v for k, v in next_convening.items() if k != "date_obj"},
         "floor_schedule": floor_schedule,
@@ -837,6 +837,116 @@ def parse_forward_floor_schedule(text: str, today: date) -> Dict[str, Any]:
         "ignored_dates": sorted(set(ignored_dates)),
         "rejected_blocks": rejected_blocks[:20],
     }
+    return apply_schedule_window_lifecycle(schedule_context, now) if now else schedule_context
+
+
+PROCEDURAL_WINDOW_DURATIONS = {
+    "pro_forma": 30,
+    "next_convening": 90,
+    "vote_block": 120,
+}
+
+
+def _schedule_window_datetime(window: Dict[str, Any]) -> Optional[datetime]:
+    date_text = str(window.get("date") or "").strip()
+    if not date_text:
+        return None
+    try:
+        window_date = datetime.fromisoformat(date_text).date()
+    except ValueError:
+        return None
+
+    time_text = str(window.get("time_label") or window.get("time") or window.get("raw_time_text") or "").strip()
+    window_time = parse_time(time_text) or time(23, 59)
+    return datetime.combine(window_date, window_time)
+
+
+def _schedule_window_state(window: Dict[str, Any], kind: str, now: datetime) -> Tuple[str, Optional[datetime], Optional[datetime]]:
+    start = _schedule_window_datetime(window)
+    if not start:
+        return "UPCOMING", None, None
+    if start.tzinfo is not None:
+        start = start.replace(tzinfo=None)
+    comparable_now = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    end = start + timedelta(minutes=PROCEDURAL_WINDOW_DURATIONS.get(kind, 60))
+    if comparable_now < start:
+        return "UPCOMING", start, end
+    if comparable_now <= end:
+        return "ACTIVE", start, end
+    return "EXPIRED", start, end
+
+
+def _stamp_schedule_window(window: Dict[str, Any], kind: str, now: datetime) -> Dict[str, Any]:
+    stamped = dict(window)
+    state, starts_at, expires_at = _schedule_window_state(stamped, kind, now)
+    stamped["timing_state"] = state
+    stamped["window_type"] = kind
+    if starts_at:
+        stamped["starts_at"] = starts_at.isoformat()
+    if expires_at:
+        stamped["expires_at"] = expires_at.isoformat()
+    return stamped
+
+
+def apply_schedule_window_lifecycle(schedule_context: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Classify parsed procedural windows and remove expired windows from operational slots."""
+    if not now:
+        return schedule_context
+
+    context = dict(schedule_context or {})
+    expired_windows: List[Dict[str, Any]] = []
+    active_windows: List[Dict[str, Any]] = []
+    upcoming_windows: List[Dict[str, Any]] = []
+
+    fresh_pro_formas = []
+    for pro_forma in context.get("pro_formas") or []:
+        stamped = _stamp_schedule_window(pro_forma, "pro_forma", now)
+        if stamped["timing_state"] == "EXPIRED":
+            expired_windows.append(stamped)
+            continue
+        fresh_pro_formas.append(stamped)
+        (active_windows if stamped["timing_state"] == "ACTIVE" else upcoming_windows).append(stamped)
+    context["pro_formas"] = fresh_pro_formas
+
+    next_convening = context.get("next_convening") or {}
+    if next_convening:
+        stamped = _stamp_schedule_window(next_convening, "next_convening", now)
+        if stamped["timing_state"] == "EXPIRED":
+            expired_windows.append(stamped)
+            context["next_convening"] = {}
+            context["next_convening_date"] = ""
+            context["next_convening_time_label"] = ""
+        else:
+            context["next_convening"] = stamped
+            (active_windows if stamped["timing_state"] == "ACTIVE" else upcoming_windows).append(stamped)
+
+    vote_block = context.get("vote_block") or {}
+    if vote_block:
+        stamped = _stamp_schedule_window(vote_block, "vote_block", now)
+        if stamped["timing_state"] == "EXPIRED":
+            expired_windows.append(stamped)
+            context["vote_block"] = {}
+            context["vote_block_time_label"] = ""
+            context["normalized_vote_block_time"] = ""
+            context["vote_block_display_time"] = ""
+            context["canonical_vote_block_time"] = ""
+            context["expected_votes"] = []
+            context["expected_votes_final"] = []
+            context["cloture_filed"] = []
+        else:
+            context["vote_block"] = stamped
+            (active_windows if stamped["timing_state"] == "ACTIVE" else upcoming_windows).append(stamped)
+
+    def sort_key(window: Dict[str, Any]) -> str:
+        return window.get("starts_at") or window.get("sort_datetime") or "9999-99-99T99:99:99"
+
+    context["active_windows"] = sorted(active_windows, key=sort_key)
+    context["upcoming_windows"] = sorted(upcoming_windows, key=sort_key)
+    context["expired_windows"] = sorted(expired_windows, key=sort_key)
+    next_actionable = (context["active_windows"] + context["upcoming_windows"])[:1]
+    context["next_actionable_window"] = next_actionable[0] if next_actionable else {}
+    context["timing_lifecycle_applied_at"] = now.isoformat(timespec="seconds")
+    return context
 
 
 def forward_schedule_parser_smoke_test() -> Dict[str, Any]:
@@ -887,7 +997,7 @@ def parse_date(line: str) -> Optional[date]:
         try:
             if len(m.groups()) == 4:
                 return datetime.strptime(f"{m.group(2)} {m.group(3)} {m.group(4)}", "%B %d %Y").date()
-            if pattern.endswith("(\d{4})\b") and len(m.groups())==3 and m.group(1).isdigit():
+            if pattern.endswith(r"(\d{4})\b") and len(m.groups())==3 and m.group(1).isdigit():
                 return datetime.strptime(f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}", "%m/%d/%Y").date()
             return datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%B %d %Y").date()
         except ValueError:
@@ -2532,9 +2642,9 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     global LAST_FORWARD_SCHEDULE_DEBUG
     payload = fetch_forward_schedule_sources()
     merged = " ".join(x["text"] for x in payload["texts"])
-    schedule_context = parse_forward_floor_schedule(merged, date.today())
+    schedule_context = parse_forward_floor_schedule(merged, date.today(), datetime.now())
     before_canonicalization = schedule_context.get("vote_block_time_label", "")
-    canonical_time = canonical_vote_block_time(schedule_context)
+    canonical_time = canonical_vote_block_time(schedule_context) if schedule_context.get("vote_block") else ""
     schedule_context["vote_block_time_label"] = canonical_time
     schedule_context["vote_block_display_time"] = canonical_time
     schedule_context["canonical_vote_block_time"] = canonical_time
@@ -2580,7 +2690,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
             return "Passage vote", "This is a likely floor coverage endpoint for the measure."
         return "Expected floor vote", "Use the listed time as the next floor coverage checkpoint."
     schedule_context = context.get("schedule_context", {}) if context else {}
-    if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_formas")):
+    if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_formas") or schedule_context.get("vote_block") or schedule_context.get("expected_votes")):
         pro_formas = schedule_context.get("pro_formas", [])
         source_text = context.get("forward_schedule_source_text", "") if context else ""
         pro_forma_html = "".join(
