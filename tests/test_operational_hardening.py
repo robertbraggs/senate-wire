@@ -481,10 +481,64 @@ def test_operational_language_avoids_directive_vote_block_copy():
     rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True)
 
     combined = " ".join(actions) + rendered
-    assert "Coverage timing:" in " ".join(actions)
+    assert "Next major floor coverage window is the announced vote sequence" in " ".join(actions)
     assert "Coverage focus:" in " ".join(actions)
     assert "Prepare for" not in combined
     assert "pre-position" not in combined
+
+
+def test_homepage_status_expires_completed_pro_forma_without_hiding_future_vote_window():
+    now = datetime(2026, 5, 7, 13, 0)
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."],
+    }, now)
+
+    signals = main.build_coverage_signal_items({}, schedule_context, now)
+    status = main.homepage_operational_status(schedule_context, signals, now)
+
+    assert schedule_context["pro_formas"] == []
+    assert any(window["window_type"] == "pro_forma" for window in schedule_context["expired_windows"])
+    assert status["status"] == "No active Senate floor proceedings"
+    assert status["state"] == "UPCOMING_SESSION"
+    assert "announced vote sequence" in status["timing"]
+    assert "May 11" in status["timing"]
+    assert "5:30" in status["timing"]
+    assert schedule_context["expected_votes"]
+
+
+def test_homepage_status_reports_completed_pro_forma_as_no_active_floor_when_no_future_activity():
+    now = datetime(2026, 5, 7, 13, 0)
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+    }, now)
+
+    status = main.homepage_operational_status(schedule_context, [], now)
+
+    assert status["state"] == "COMPLETED_SESSION"
+    assert status["status"] == "No active Senate floor proceedings"
+    assert status["timing"] == "No active floor coverage window"
+    assert "completed a brief pro forma session earlier today" in status["why"]
+    assert "Pro forma period" not in status["status"]
+
+
+def test_homepage_status_state_machine_active_upcoming_completed_low_activity():
+    active = main.apply_schedule_window_lifecycle({
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+    }, datetime(2026, 5, 11, 15, 30))
+    upcoming = main.apply_schedule_window_lifecycle({
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+    }, datetime(2026, 5, 11, 14, 0))
+    completed = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+    }, datetime(2026, 5, 7, 11, 0))
+
+    assert main.homepage_operational_status(active, [], datetime(2026, 5, 11, 15, 30))["state"] == "ACTIVE_SESSION"
+    assert main.homepage_operational_status(upcoming, [], datetime(2026, 5, 11, 14, 0))["state"] == "UPCOMING_SESSION"
+    assert main.homepage_operational_status(completed, [], datetime(2026, 5, 7, 11, 0))["state"] == "COMPLETED_SESSION"
+    assert main.homepage_operational_status({}, [], datetime(2026, 5, 7, 13, 0))["state"] == "LOW_ACTIVITY_PERIOD"
 
 
 def test_refresh_script_patches_sections_and_preserves_scroll_and_accordions():
