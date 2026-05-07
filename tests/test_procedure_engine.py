@@ -129,7 +129,7 @@ def test_ambiguity_handling_lowers_confidence_and_explains():
     result = classify_event_text("A pending amendment includes a substitute amendment to the bill.")
 
     assert result["confidence"] == "medium"
-    assert "Procedural ambiguity" in result["reporter_note"]
+    assert "Procedure wording overlaps" in result["reporter_note"]
     assert "confirm against the official action" in result["reporter_note"]
 
 

@@ -335,7 +335,7 @@ def test_unresolved_prior_procedure_can_be_shown_as_material_carryover():
 
     assert current == []
     assert prior == [carryover_item]
-    assert "Procedural Carryover" in rendered
+    assert "Floor Timing Carryover" in rendered
     assert "may affect the next coverage window" in rendered
 
 
@@ -481,7 +481,7 @@ def test_operational_language_avoids_directive_vote_block_copy():
     rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True)
 
     combined = " ".join(actions) + rendered
-    assert "Expected procedural focus:" in " ".join(actions)
+    assert "Coverage timing:" in " ".join(actions)
     assert "Coverage focus:" in " ".join(actions)
     assert "Prepare for" not in combined
     assert "pre-position" not in combined

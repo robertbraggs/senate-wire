@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
-# Procedural interpretation layer for operational/newsroom awareness.
+# Procedure-to-logistics layer for newsroom awareness.
 # This uses the legislative status-step index as its source of truth and does
 # not forecast outcomes, whip counts, or political positioning.
 @dataclass(frozen=True)
@@ -138,8 +138,8 @@ _RULES: List[EventRule] = [
     EventRule("RECESS", [r"\brecess(?:ed)?\b", r"\bstand(?:s)? in recess\b"], "high"),
 ]
 
-# Significance is intentionally procedural only: it rates movement through the
-# status map, not politics or the probability that a measure will pass.
+# Logistics significance is tied to movement through the status map, not
+# politics or the probability that a measure will pass.
 _MAJOR = {
     "CLOTURE_FILED",
     "CLOTURE_INVOKED",
@@ -213,18 +213,18 @@ def _significance(code: str) -> str:
 def _reporter_note(step: StatusStep, next_steps: List[str], ambiguous: bool, ambiguous_labels: List[str]) -> str:
     suffix = ""
     if ambiguous_labels:
-        suffix += f" Procedural ambiguity: the text also resembles {', '.join(ambiguous_labels)}; confirm against the official action."
+        suffix += f" Procedure wording overlaps with {', '.join(ambiguous_labels)}; confirm against the official action."
     if ambiguous:
         suffix += " The transition map is incomplete, so confirm the next official action."
-    return f"Treat as {step.label.lower()} in the {step.phase.lower()} phase. Watch for: {', '.join(next_steps[:3])}.{suffix}"
+    return f"Logistics read: {step.label.lower()} in the {step.phase.lower()} phase. Watch timing for: {', '.join(next_steps[:3])}.{suffix}"
 
 
 def _producer_note(step: StatusStep, significance: str) -> str:
     if significance == "major":
-        return f"Flag for possible live/update treatment: {step.label} can materially change floor posture or timing."
+        return f"Flag for staffing/timing review: {step.label} can materially change floor posture or timing."
     if significance == "notable":
-        return f"Add to the coverage watch list: {step.label} may set up the next floor or inter-chamber move."
-    return f"Log for context unless tied to a named senator, vote, or leadership announcement: {step.label}."
+        return f"Add to the coverage watch list: {step.label} may set up the next floor coverage window or inter-chamber move."
+    return f"Log only if it affects press positioning, a named senator, a vote, or leadership availability: {step.label}."
 
 
 def interpret_status(
