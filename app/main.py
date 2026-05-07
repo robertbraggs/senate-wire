@@ -2724,8 +2724,8 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
                 <div><strong>Next expected floor vote window:</strong> {html.escape(vote_label)}</div>
                 <div><strong>Expected votes:</strong><ol>{votes_html}</ol></div>
-                <div><strong>Logistics note:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is the next clear floor staffing checkpoint.</div>
-                <div><strong>Coverage timing:</strong> The highest-value public coverage window is the announced vote block.</div>
+                <div><strong>Logistics note:</strong> The Senate is scheduled to return after any pro forma sessions. The announced vote block is the next clear floor staffing checkpoint.</div>
+                <div><strong>Coverage timing:</strong> Next major floor coverage window is the announced vote sequence.</div>
             </div>
         </div>
         """
@@ -2743,7 +2743,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
             <p><strong>{html.escape(first.get('text', 'Public schedule floor action'))}</strong></p>
             <div class='logistics'>
                 <div><strong>Logistics note:</strong> Public schedule language points to the next floor staffing checkpoint.</div>
-                <div><strong>Coverage timing:</strong> Coverage begins around convening; the higher-value public coverage window is the announced vote block.</div>
+                <div><strong>Coverage timing:</strong> Coverage starts with convening; the announced vote sequence is the clearest floor coverage window.</div>
                 <div><strong>Coverage consequence:</strong> The next convening and vote block define likely floor coverage windows.</div>
             </div>
             <ul>{''.join(rows)}</ul>
@@ -2888,8 +2888,8 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
                 vote_types.append("passage")
         type_line = ", ".join(dict.fromkeys(vote_types)) if vote_types else "scheduled votes"
         return [
-            f"Coverage timing: vote block listed for {vote_date} · {vote_time}.",
-            f"Coverage focus: {type_line} tied to the announced vote block sequence.",
+            f"Next major floor coverage window is the announced vote sequence on {vote_date} · {vote_time}.",
+            f"Coverage focus: {type_line} tied to that sequence.",
             "Watch: UC or cloture-related schedule changes can move vote timing quickly.",
         ]
     ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
@@ -3372,7 +3372,93 @@ def _status_label(score: float) -> str:
         return "Floor coverage window"
     if score >= 40:
         return "Floor coverage window"
-    return "Pro forma period (no floor coverage window)"
+    return "Low-activity Senate period"
+
+
+def _window_is_upcoming(window: Dict[str, Any]) -> bool:
+    return (window or {}).get("timing_state") == "UPCOMING"
+
+
+def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signals: List[JoltItem], now: Optional[datetime] = None) -> Dict[str, str]:
+    """Translate procedural windows into current press-logistics status copy."""
+    context = schedule_context or {}
+    active_windows = context.get("active_windows") or []
+    upcoming_windows = context.get("upcoming_windows") or []
+    expired_windows = context.get("expired_windows") or []
+    vote_block = context.get("vote_block") or {}
+    next_convening = context.get("next_convening") or {}
+    expected_votes = context.get("expected_votes") or []
+
+    active_floor_signal = any(item.status in {"current", "active", "live"} for item in coverage_signals or [])
+    active_vote = next((w for w in active_windows if w.get("window_type") == "vote_block"), None)
+    active_convening = next((w for w in active_windows if w.get("window_type") == "next_convening"), None)
+    active_pro_forma = next((w for w in active_windows if w.get("window_type") == "pro_forma"), None)
+    upcoming_vote = vote_block if _window_is_upcoming(vote_block) else next((w for w in upcoming_windows if w.get("window_type") == "vote_block"), {})
+    upcoming_convening = next_convening if _window_is_upcoming(next_convening) else next((w for w in upcoming_windows if w.get("window_type") == "next_convening"), {})
+    completed_pro_forma_today = False
+    if now:
+        for window in expired_windows:
+            if window.get("window_type") != "pro_forma":
+                continue
+            starts_at = window.get("starts_at") or window.get("sort_datetime") or ""
+            try:
+                if datetime.fromisoformat(starts_at).date() == now.date():
+                    completed_pro_forma_today = True
+            except ValueError:
+                completed_pro_forma_today = window.get("date") == now.date().isoformat()
+
+    if active_vote or active_floor_signal:
+        return {
+            "state": "ACTIVE_FLOOR_COVERAGE_WINDOW",
+            "status": "Active floor coverage window",
+            "timing": "Active floor coverage window",
+            "why": "Public sources show active floor activity or a vote window now.",
+        }
+    if active_convening:
+        return {
+            "state": "ACTIVE_SESSION",
+            "status": "Senate floor session active",
+            "timing": "Floor session active; watch for vote timing updates",
+            "why": "The announced convening window is active; confirm floor activity from official sources.",
+        }
+    if active_pro_forma:
+        return {
+            "state": "ACTIVE_SESSION",
+            "status": "Brief pro forma session window",
+            "timing": "No active floor coverage window",
+            "why": "A brief pro forma window is current, with no vote coverage window announced.",
+        }
+    if upcoming_vote:
+        vote_date = upcoming_vote.get("date_label") or "the next floor day"
+        vote_time = canonical_vote_block_time(context) or upcoming_vote.get("time_label") or "time pending"
+        return {
+            "state": "UPCOMING_SESSION",
+            "status": "No active Senate floor proceedings",
+            "timing": f"Next major floor coverage window is the announced vote sequence on {vote_date} at {vote_time}.",
+            "why": "No active floor proceedings now; the next operationally relevant floor window remains scheduled.",
+        }
+    if upcoming_convening or expected_votes:
+        convene_date = upcoming_convening.get("date_label") or "the next floor day"
+        convene_time = upcoming_convening.get("time_label") or "time pending"
+        return {
+            "state": "UPCOMING_SESSION",
+            "status": "No active Senate floor proceedings",
+            "timing": f"Next floor checkpoint is the scheduled convening on {convene_date} at {convene_time}.",
+            "why": "No active floor proceedings now; monitor official sources for vote timing or floor action changes.",
+        }
+    if completed_pro_forma_today:
+        return {
+            "state": "COMPLETED_SESSION",
+            "status": "No active Senate floor proceedings",
+            "timing": "No active floor coverage window",
+            "why": "The Senate completed a brief pro forma session earlier today.",
+        }
+    return {
+        "state": "LOW_ACTIVITY_PERIOD",
+        "status": "Senate out of active floor session",
+        "timing": "No active floor coverage window",
+        "why": "Current public sources do not show active floor proceedings or an announced floor coverage window.",
+    }
 
 
 def procedural_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltItem], List[JoltItem]]:
@@ -3912,21 +3998,19 @@ def dashboard(
         current_coverage_signals = build_coverage_signal_items(groups, schedule_context, now)
         signal_reasons = [item.title for item in current_coverage_signals]
         signal_scope = coverage_signal_scope(current_coverage_signals)
-        coverage_timing = "Expected" if next_items else "No active window"
+        operational_status = homepage_operational_status(schedule_context, current_coverage_signals, now)
+        coverage_timing = operational_status["timing"]
         watch_list = ", ".join((now_item.senators_detected if now_item else [])[:3]) or "Leadership, EBB, committee schedule"
         if top_signal:
-            ticker_status = _status_label(top_signal.total_score)
+            ticker_status = operational_status["status"] if operational_status["state"] != "ACTIVE_FLOOR_COVERAGE_WINDOW" else _status_label(top_signal.total_score)
             ticker_location = top_banner.get("where_to_be_now") or "No active coverage location"
-            ticker_why = top_banner.get("watch") or "Floor, event, or committee updates may drive coverage."
+            ticker_why = operational_status["why"] or top_banner.get("watch") or "Floor, event, or committee updates may drive coverage."
             ticker_guidance = next_items[0].action_line if next_items else "Monitor for new floor activity, EBB postings, and committee schedule updates."
         else:
-            vote_block = (forward_context.get("schedule_context", {}) or {}).get("vote_block", {})
-            next_floor_date = vote_block.get("date_label")
-            ticker_status = f"Pro forma period — next floor coverage checkpoint {next_floor_date}" if next_floor_date else "Pro forma period (no floor coverage window)"
+            ticker_status = operational_status["status"]
             ticker_location = "No active coverage location"
-            coverage_timing = "No active window"
             watch_list = "Leadership, EBB, committee schedule"
-            ticker_why = "No votes scheduled, and current public sources do not show an active floor coverage window."
+            ticker_why = operational_status["why"]
             ticker_guidance = "Monitor for new floor activity, EBB postings, and committee schedule updates."
 
         today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
