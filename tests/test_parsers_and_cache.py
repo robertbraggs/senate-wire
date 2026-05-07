@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -74,3 +74,46 @@ def test_source_failure_preserves_last_successful_snapshot():
     assert snapshot["stale"] is True
     assert snapshot["payload"]["text"] == "known-good payload"
     assert "temporary upstream failure" in snapshot["error_message"]
+
+def test_expired_pro_forma_windows_disappear_and_future_vote_promotes():
+    sample = """Other than pro formas on Monday, May 4 at 6:45 a.m. and Thursday, May 7 at 10:00 a.m. the Senate will next convene at 3:00 p.m. on Monday, May 11th.
+At approximately 5:30pm, 2 roll call votes expected.
+Adoption of Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
+Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."""
+
+    parsed = parse_forward_floor_schedule(sample, today=date(2026, 5, 7), now=datetime(2026, 5, 7, 10, 45))
+
+    assert parsed["pro_formas"] == []
+    assert any(window["window_type"] == "pro_forma" for window in parsed["expired_windows"])
+    assert parsed["next_actionable_window"]["window_type"] == "next_convening"
+    assert parsed["next_convening"]["timing_state"] == "UPCOMING"
+    assert parsed["vote_block"]["timing_state"] == "UPCOMING"
+    assert parsed["expected_votes"]
+
+def test_expired_vote_block_stops_influencing_operational_schedule():
+    sample = """The Senate will next convene at 3:00 p.m. on Monday, May 11th.
+At approximately 5:30pm, 2 roll call votes expected.
+Adoption of Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
+Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."""
+
+    parsed = parse_forward_floor_schedule(sample, today=date(2026, 5, 11), now=datetime(2026, 5, 11, 20, 0))
+
+    assert parsed["next_convening"] == {}
+    assert parsed["vote_block"] == {}
+    assert parsed["expected_votes"] == []
+    assert {window["window_type"] for window in parsed["expired_windows"]} >= {"next_convening", "vote_block"}
+    assert parsed["active_windows"] == []
+    assert parsed["upcoming_windows"] == []
+
+
+def test_schedule_window_state_transitions_from_upcoming_to_active_to_expired():
+    sample = "The Senate will next convene at 3:00 p.m. on Monday, May 11th."
+
+    upcoming = parse_forward_floor_schedule(sample, today=date(2026, 5, 11), now=datetime(2026, 5, 11, 14, 0))
+    active = parse_forward_floor_schedule(sample, today=date(2026, 5, 11), now=datetime(2026, 5, 11, 15, 30))
+    expired = parse_forward_floor_schedule(sample, today=date(2026, 5, 11), now=datetime(2026, 5, 11, 17, 0))
+
+    assert upcoming["next_convening"]["timing_state"] == "UPCOMING"
+    assert active["next_convening"]["timing_state"] == "ACTIVE"
+    assert expired["next_convening"] == {}
+    assert expired["expired_windows"][0]["timing_state"] == "EXPIRED"
