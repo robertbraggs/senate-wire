@@ -2202,6 +2202,19 @@ def filter_global_boilerplate(value: Optional[str]) -> Optional[str]:
     return None if v.lower() in GLOBAL_SUPPRESSED_VALUES else v
 
 
+def is_substantive_floor_remark(item: JoltItem) -> bool:
+    text = clean(f"{item.title} {item.raw} {item.takeaway} {item.topic}").lower()
+    leadership_names = {"John Thune", "Chuck Schumer", "Dick Durbin", "Mitch McConnell"}
+    procedural_terms = (
+        "leader remarks", "leadership", "cloture", "unanimous consent", "motion to",
+        "nomination", "executive session", "floor setup", "manager", "quorum",
+        "vote", "roll call", "agreement", "objection", "schedule", "recess", "adjourn",
+    )
+    if any(name in item.senators_detected for name in leadership_names):
+        return True
+    return any(term in text for term in procedural_terms)
+
+
 def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
     remarks = []
     grouped_remarks: Dict[str, List[JoltItem]] = {}
@@ -2209,7 +2222,7 @@ def build_floor_remarks(items: List[JoltItem]) -> List[JoltItem]:
     leadership_names = {"John Thune", "Chuck Schumer", "Dick Durbin", "Mitch McConnell"}
 
     for item in items:
-        if item.category != "Remarks":
+        if item.category != "Remarks" or not is_substantive_floor_remark(item):
             continue
         if item.senators_detected:
             senator_name = item.senators_detected[0]
@@ -2765,8 +2778,8 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
                 vote_types.append("passage")
         type_line = ", ".join(dict.fromkeys(vote_types)) if vote_types else "scheduled votes"
         return [
-            f"Prepare for the expected vote block ({vote_date} · {vote_time}) and pre-position before roll calls begin.",
-            f"Prioritize {type_line} coverage plans tied to the announced vote block sequence.",
+            f"Expected procedural focus: vote block listed for {vote_date} · {vote_time}.",
+            f"Coverage focus: {type_line} tied to the announced vote block sequence.",
             "Watch for UC agreement/UC request or cloture-related schedule changes that can move vote timing quickly.",
         ]
     ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
@@ -2784,7 +2797,7 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
             "Monitor: floor schedule updates and leadership cues.",
             "Track: committee calendars and hearing starts.",
             "Watch: EBB postings for new stakeouts or events.",
-            "Confirm: vote timing and room-level guidance before moving.",
+            "Watch for: vote timing and room-level guidance from official sources.",
         ]
         actions.append(fallback[len(actions)])
 
@@ -2871,7 +2884,7 @@ def coverage_outlook(items: List[JoltItem], groups: Dict[str, List[JoltItem]]) -
         return "Focus on EBB events, hearings, and press availabilities."
 
     if groups.get("Schedule"):
-        return "Plan around convening time and leader remarks."
+        return "Operational focus: convening time and leader remarks."
 
     return "No votes scheduled. No hearings scheduled. No scheduled press events detected."
 
@@ -2910,7 +2923,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         if is_meaningful(item.coverage_window):
             logistics_rows.append(("Current/upcoming", item.coverage_window))
         if is_meaningful(item.coverage_action):
-            logistics_rows.append(("Operational action", item.coverage_action))
+            logistics_rows.append(("Operational focus", item.coverage_action))
         if is_meaningful(item.public_value):
             logistics_rows.append(("Why it matters", item.public_value))
         logistics = ""
@@ -2959,7 +2972,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         if is_meaningful(filter_global_boilerplate(item.coverage_location)): logistics_rows.append(("Coverage location", filter_global_boilerplate(item.coverage_location)))
         if is_meaningful(filter_global_boilerplate(item.coverage_window)): logistics_rows.append(("Coverage window", filter_global_boilerplate(item.coverage_window)))
         guidance = filter_global_boilerplate(item.coverage_action or item.action_line)
-        if is_meaningful(guidance): logistics_rows.append(("Coverage guidance", guidance))
+        if is_meaningful(guidance): logistics_rows.append(("Coverage focus", guidance))
         watch = filter_global_boilerplate(item.who_to_watch)
         if is_meaningful(watch) and watch != "Senate Committee": logistics_rows.append(("Who to watch", watch))
         ctype = filter_global_boilerplate(item.coverage_type)
@@ -3528,18 +3541,18 @@ def render_live_vote_mode(items: List[JoltItem], forward_context: Dict[str, Any]
     vote_dt = _parse_schedule_datetime(vote_block.get("date", ""), vote_block_label)
     underway = _vote_underway(items)
     if not underway and not (vote_dt and vote_dt.date() == now.date()):
-        return ""
+        return '<div hidden data-refresh-key="live-vote-mode"></div>'
     expected_votes = schedule_context.get("expected_votes", []) or []
     vote_list = "".join(f"<li><strong>{html.escape(v)}</strong><br><span>{html.escape(explain_vote_type(v))}</span></li>" for v in expected_votes) or "<li>Expected vote list pending public posting.</li>"
     status = "Vote underway" if underway else "Vote block expected today"
     next_action = explain_vote_type(expected_votes[0]) if expected_votes else "Monitor public floor sources for the next likely action."
     return f"""
-    <section class="live-vote-mode" aria-label="Live vote mode">
+    <section class="live-vote-mode" aria-label="Live vote mode" data-refresh-key="live-vote-mode">
         <div class="mode-label">LIVE VOTE MODE</div>
         <div class="live-grid">
             <div><strong>Current vote status</strong><span>{html.escape(status)}</span></div>
             <div><strong>Vote block time</strong><span>{html.escape(vote_block_label or 'Timing pending')}</span></div>
-            <div><strong>Coverage timing</strong><span>Be ready before the vote block; monitor as votes start.</span></div>
+            <div><strong>Coverage timing</strong><span>Expected focus before the vote block and as votes start.</span></div>
             <div><strong>Where to monitor</strong><span>Senate floor, roll call votes, EBB, and Gallery guidance.</span></div>
         </div>
         <h3>Expected vote list</h3>
@@ -3617,7 +3630,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "upcoming",
             "upcoming_vote_window",
             "Upcoming",
-            "Plan floor coverage before the vote block and monitor roll call sources as voting begins.",
+            "Coverage focus before the vote block and as roll call sources update.",
             "A scheduled vote block can reset reporter positioning and staffing for floor coverage.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
@@ -3630,7 +3643,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "upcoming",
             "cloture_vote_window",
             "Upcoming",
-            "Prepare for debate-limit and post-vote procedural follow-up coverage.",
+            "Expected procedural focus: debate-limit vote and post-vote follow-up.",
             "A cloture vote can limit debate and move the Senate toward final action.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
@@ -3654,7 +3667,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "upcoming",
             "scheduled_floor_action",
             "Upcoming",
-            "Use convening time as the next checkpoint for floor movement and leader remarks.",
+            "Operational focus: convening time as the next checkpoint for floor movement and leader remarks.",
             "Convening can open the next procedural window even before votes are announced.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
@@ -3669,7 +3682,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             status,
             "committee_hearing_window",
             timing,
-            "Check committee rooms, witness lists, and member availability around the hearing window.",
+            "Coverage focus: committee rooms, witness lists, and member availability around the hearing window.",
             "Committee hearings can drive issue coverage and hallway interviews away from the floor.",
             source="Committee schedule",
         ))
@@ -3706,10 +3719,13 @@ def render_signal_summary(reasons: List[str], vote_count: int, signal_scope: Opt
     scope = signal_scope or _infer_signal_summary_scope(reasons)
     signal_label = f"{scope} Coverage {'Signal' if signal_count == 1 else 'Signals'}"
     vote_stat = f"<div class='stat'><b>{vote_count}</b>Votes</div>" if vote_count else ""
-    reason_text = " ".join(reasons[:2]) if reasons else "No current coverage signals."
+    if reasons:
+        reason_text = "<ul>" + "".join(f"<li>{html.escape(reason)}</li>" for reason in reasons) + "</ul>"
+    else:
+        reason_text = "<span>No current coverage signals.</span>"
     return f"""
     <div class="summary" data-refresh-key="coverage-summary">
-        <div class="stat signal-stat"><b>{signal_count}</b>{signal_label}<span>{html.escape(reason_text)}</span></div>
+        <div class="stat signal-stat"><b>{signal_count}</b>{signal_label}{reason_text}</div>
         {vote_stat}
     </div>
     """
@@ -4071,6 +4087,8 @@ def dashboard(
                 .card, .stat, .outlook, .links, .ticker, .empty {{ overflow-wrap: anywhere; }}
                 .summary, .topgrid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
                 .signal-stat span {{ display: block; margin-top: 6px; color: var(--color-text-muted); font-size: 14px; line-height: 1.45; }}
+                .signal-stat ul {{ margin: 8px 0 0; padding-left: 20px; color: var(--color-text-muted); font-size: 14px; line-height: 1.45; }}
+                .signal-stat li {{ margin-bottom: 4px; }}
                 .links {{ display: grid; gap: 10px; }}
                 .link-group {{ border: 1px solid var(--color-border-gray); border-radius: 14px; background: var(--color-card-background); overflow: hidden; }}
                 .link-group summary {{ min-height: 48px; padding: 14px 16px; cursor: pointer; font-weight: 800; color: var(--color-primary-navy); list-style-position: inside; }}
@@ -4134,7 +4152,7 @@ def dashboard(
             <header class="app-header">
                 <div class="wrap">
                     <h1>{APP_NAME}</h1>
-                    <div class="sub">{today} · Real-time coverage guidance for congressional reporters</div>
+                    <div class="sub">{today} · Real-time Senate operational awareness for congressional reporters</div>
                     <div class="sub">Sources: Congressional Reporters · EBB · Congress.gov · Committee Schedules</div>
                     <div class="live-controls" role="group" aria-label="Live controls">
                         <button class="button" type="button" id="refresh-button">Refresh</button>
@@ -4148,13 +4166,13 @@ def dashboard(
                 {live_vote_mode}
                 <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
                 <div class="ticker" data-refresh-key="where-to-be-now">
-                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage guidance</strong><br>{html.escape(ticker_guidance)}</div>
+                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage focus</strong><br>{html.escape(ticker_guidance)}</div>
 
                 {render_signal_summary(signal_reasons, len(groups.get("Votes", [])), signal_scope)}
 
                 <section class="section" data-refresh-key="next-expected-floor-action"><h2>Next Expected Floor Action</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
 
-                <section class="section" data-refresh-key="top-actions"><h2>Top Actions</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>
+                {'<div hidden data-refresh-key="top-actions"></div>' if current_coverage_signals else f'<section class="section" data-refresh-key="top-actions"><h2>Operational Focus</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>'}
 
                 {section("Senate Floor Activity", groups.get("Schedule", []), view, hide_empty=True)}
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}

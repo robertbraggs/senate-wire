@@ -437,7 +437,54 @@ def test_coverage_signal_reasons_explain_non_floor_signal_count():
     assert len(reasons) == 2
     assert "Upcoming vote window scheduled for Monday, May 11" in rendered
     assert "Cloture vote window listed" in rendered
+    assert rendered.count("<li>") == len(reasons)
     assert "No active Senate floor" not in rendered
+
+
+def test_empty_floor_remarks_section_is_hidden_when_no_substantive_remarks():
+    filler = make_activity_item("Sen. Example spoke about local sports.", "2026-05-06T12:00:00", category="Remarks")
+    filler.senators_detected = ["Example"]
+    filler.topic = "sports"
+
+    remarks = main.build_floor_remarks([filler])
+    rendered = main.section("Floor Remarks", remarks, "reporter", collapsed=True, hide_empty=True)
+
+    assert remarks == []
+    assert rendered == '<div hidden data-refresh-key="floor-remarks"></div>'
+
+
+def test_substantive_floor_remarks_render_when_procedural_or_leadership_related():
+    leadership = make_activity_item("Leader remarks on the floor schedule.", "2026-05-06T12:00:00", category="Remarks")
+    leadership.senators_detected = ["John Thune"]
+    leadership.topic = "schedule"
+    cloture = make_activity_item("Sen. Example spoke about cloture on the nomination.", "2026-05-06T13:00:00", category="Remarks")
+    cloture.senators_detected = ["Example"]
+    cloture.topic = "cloture"
+
+    remarks = main.build_floor_remarks([leadership, cloture])
+    rendered = main.section("Floor Remarks", remarks, "reporter", collapsed=True, hide_empty=True)
+
+    assert len(remarks) == 2
+    assert "Floor Remarks (2)" in rendered
+    assert "John Thune" in rendered
+    assert "Example" in rendered
+
+
+def test_operational_language_avoids_directive_vote_block_copy():
+    schedule_context = {
+        "vote_block": {"date_label": "Monday, May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."],
+    }
+
+    signals = main.build_coverage_signal_items({}, schedule_context)
+    actions = main.top_actions([], {"schedule_context": schedule_context})
+    rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True)
+
+    combined = " ".join(actions) + rendered
+    assert "Expected procedural focus:" in " ".join(actions)
+    assert "Coverage focus:" in " ".join(actions)
+    assert "Prepare for" not in combined
+    assert "pre-position" not in combined
 
 
 def test_refresh_script_patches_sections_and_preserves_scroll_and_accordions():
@@ -446,5 +493,9 @@ def test_refresh_script_patches_sections_and_preserves_scroll_and_accordions():
     assert "patchMainContent(nextMain, currentMain)" in script
     assert "accordionState(currentMain)" in script
     assert "restoreAccordionState(currentMain, openState)" in script
-    assert "window.scrollTo({ top: y, behavior: \"auto\" })" in script
+    assert "window.scrollTo({ left: x, top: y, behavior: \"auto\" })" in script
     assert "currentMain.innerHTML = nextMain.innerHTML" not in script
+    assert "document.createElement(\"div\")" in script
+    assert "placeholder.dataset.refreshKey" in script
+    assert "current.replaceWith(next)" in script
+    assert "document.body.innerHTML" not in script
