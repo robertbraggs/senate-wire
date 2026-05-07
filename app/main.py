@@ -2442,7 +2442,7 @@ def enrich_public_fields(item: JoltItem) -> None:
         item.chamber_phase = "executive session"
     if item.coverage_type == "vote":
         item.access_note = "High-interest coverage may occur around public-facing Senate coverage locations."
-        item.rules_note = "Timing can change based on floor proceedings and official direction."
+        item.rules_note = "Timing can change based on floor activity and official direction."
         item.pool_note = "Pool coverage may apply for unusually high-interest events."
     elif item.coverage_type == "hearing":
         item.access_note = "Coverage should be coordinated through the appropriate Gallery or committee contact."
@@ -2571,14 +2571,14 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
     def classify_expected_vote(text: str) -> Tuple[str, str]:
         lower = clean(text).lower()
         if "motion to invoke cloture" in lower or "cloture" in lower:
-            return "Cloture vote (limits debate)", "This vote decides whether to limit debate and move toward final Senate action."
+            return "Cloture vote (coverage window)", "This vote can create a defined floor coverage window and post-vote follow-up."
         if "adoption of resolution" in lower or "adoption" in lower:
-            return "Adoption vote (procedural)", "This procedural vote sets up Senate consideration terms before later disposition."
+            return "Adoption vote (floor setup)", "This vote may set the floor sequence and timing for later coverage."
         if "confirmation" in lower:
-            return "Confirmation vote (final action)", "This is final Senate action on a nomination."
+            return "Confirmation vote", "This is a likely floor coverage endpoint for the nomination."
         if "passage" in lower:
-            return "Passage vote (final legislative action)", "This is final Senate action on legislation."
-        return "Expected floor vote", "This vote advances current floor consideration."
+            return "Passage vote", "This is a likely floor coverage endpoint for the measure."
+        return "Expected floor vote", "Use the listed time as the next floor coverage checkpoint."
     schedule_context = context.get("schedule_context", {}) if context else {}
     if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_formas")):
         pro_formas = schedule_context.get("pro_formas", [])
@@ -2614,7 +2614,7 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
                 <div><strong>Next expected floor vote window:</strong> {html.escape(vote_label)}</div>
                 <div><strong>Expected votes:</strong><ol>{votes_html}</ol></div>
-                <div><strong>Legislative context:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is expected to set up executive-session consideration and potential final actions.</div>
+                <div><strong>Logistics note:</strong> The Senate is scheduled to return after pro forma sessions. The first announced vote block is the next clear floor staffing checkpoint.</div>
                 <div><strong>Coverage timing:</strong> The highest-value public coverage window is the announced vote block.</div>
             </div>
         </div>
@@ -2632,9 +2632,9 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
             <h3>{html.escape(' · '.join(x for x in [first.get('date_label'), first.get('time_label')] if x) or 'Upcoming floor schedule')}</h3>
             <p><strong>{html.escape(first.get('text', 'Public schedule floor action'))}</strong></p>
             <div class='logistics'>
-                <div><strong>Legislative context:</strong> The Senate is scheduled for upcoming floor business based on public schedule source language.</div>
+                <div><strong>Logistics note:</strong> Public schedule language points to the next floor staffing checkpoint.</div>
                 <div><strong>Coverage timing:</strong> Coverage begins around convening; the higher-value public coverage window is the announced vote block.</div>
-                <div><strong>Public value:</strong> The next convening and vote block set likely floor coverage windows.</div>
+                <div><strong>Coverage consequence:</strong> The next convening and vote block define likely floor coverage windows.</div>
             </div>
             <ul>{''.join(rows)}</ul>
             <a class='source' href='{html.escape(CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
@@ -2653,11 +2653,11 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         <p><strong>{html.escape(item.title)}</strong></p>
         <div class='logistics'>
             <div><strong>Floor action type:</strong> {html.escape(item.category)}</div>
-            <div><strong>Chamber phase:</strong> {html.escape(chamber_phase)}</div>
+            <div><strong>Coverage setting:</strong> {html.escape(chamber_phase)}</div>
             <div><strong>Vote status:</strong> {html.escape(vote_status)}</div>
-            <div><strong>Legislative context:</strong> {html.escape(item.legislative_context or 'Public schedule source indicates upcoming floor business.')}</div>
+            <div><strong>Logistics note:</strong> {html.escape(item.legislative_context or 'Public schedule source indicates upcoming floor business.')}</div>
             <div><strong>Coverage timing:</strong> {html.escape(item.coverage_note or item.action_line or 'Coverage begins around the announced floor timing.')}</div>
-            <div><strong>Public value:</strong> {html.escape(item.public_value or item.takeaway)}</div>
+            <div><strong>Coverage consequence:</strong> {html.escape(item.public_value or item.takeaway)}</div>
         </div>
         <a class='source' href='{html.escape(source_link)}' target='_blank'>Public schedule source</a>
     </div>
@@ -2676,14 +2676,14 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
         def classify_expected_vote(text: str) -> Tuple[str, str, str]:
             lower_text = clean(text).lower()
             if "motion to invoke cloture" in lower_text or "cloture" in lower_text:
-                return "Cloture vote (limits debate)", "Floor Consideration — Executive Session", "If cloture is invoked, debate time is limited and the Senate moves toward confirmation."
+                return "Cloture vote (coverage window)", "Floor coverage window", "Watch timing: cloture vote may create a defined floor coverage window and post-vote follow-up."
             if "adoption of resolution" in lower_text or "adoption" in lower_text:
-                return "Adoption vote (procedural)", "Floor Consideration — Executive Session", "Adoption establishes procedural terms that set up subsequent nomination or floor consideration."
+                return "Adoption vote (floor setup)", "Floor coverage window", "Watch timing: adoption may set up the next floor coverage sequence."
             if "confirmation" in lower_text:
-                return "Confirmation vote (final action)", "Floor Consideration — Executive Session", "After confirmation, the nomination is finally disposed and the Senate proceeds to the next item."
+                return "Confirmation vote", "Floor coverage window", "Coverage focus: vote timing and post-vote reaction around the nomination."
             if "passage" in lower_text:
-                return "Passage vote (final legislative action)", "Floor Consideration — Legislative Business", "After passage, the measure is finally disposed and transmitted to the next chamber/stage."
-            return "Expected floor action", "Floor Consideration", "This vote advances active floor business."
+                return "Passage vote", "Floor coverage window", "Coverage focus: vote timing and post-vote reaction around the measure."
+            return "Expected floor action", "Floor coverage window", "Use the listed time as the next floor coverage checkpoint."
         cards = []
         for text in parsed[:6]:
             lower_text = text.lower()
@@ -2699,8 +2699,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> {html.escape(action)}</div>
                     <div><strong>Timing:</strong> {html.escape(vote_timing)}</div>
-                    <div><strong>Chamber phase:</strong> {html.escape(chamber_phase)}</div>
-                    <div><strong>Context:</strong> {html.escape(follow_on)}</div>
+                    <div><strong>Coverage setting:</strong> {html.escape(chamber_phase)}</div>
+                    <div><strong>Coverage consequence:</strong> {html.escape(follow_on)}</div>
                 </div>
             </article>
             """)
@@ -2713,8 +2713,8 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
                 <div class='logistics'>
                     <div><strong>Expected action:</strong> Cloture filed</div>
                     <div><strong>Timing:</strong> future action not yet scheduled</div>
-                    <div><strong>Chamber phase:</strong> Executive session</div>
-                    <div><strong>Context:</strong> Cloture has been filed, signaling possible future floor consideration.</div>
+                    <div><strong>Coverage setting:</strong> Executive session</div>
+                    <div><strong>Coverage consequence:</strong> Watch for a later cloture vote window if official timing is posted.</div>
                 </div>
             </article>
             """)
@@ -2748,7 +2748,7 @@ def render_forward_look(items: List[JoltItem], featured: Optional[JoltItem], con
             <div class='logistics'>
                 <div><strong>Expected action:</strong> {html.escape(item.title)}</div>
                 <div><strong>Timing:</strong> {html.escape(_fmt_item_datetime(item))}</div>
-                <div><strong>Procedural stage:</strong> {html.escape(item.procedure_stage or item.category)}</div>
+                <div><strong>Coverage setting:</strong> {html.escape(item.procedure_stage or item.category)}</div>
             </div>
             <a class='source' href='{html.escape(item.url or CONGRESSIONAL_REPORTERS_URL)}' target='_blank'>Public schedule source</a>
         </article>
@@ -2778,9 +2778,9 @@ def top_actions(items: List[JoltItem], context: Optional[Dict[str, Any]] = None)
                 vote_types.append("passage")
         type_line = ", ".join(dict.fromkeys(vote_types)) if vote_types else "scheduled votes"
         return [
-            f"Expected procedural focus: vote block listed for {vote_date} · {vote_time}.",
+            f"Coverage timing: vote block listed for {vote_date} · {vote_time}.",
             f"Coverage focus: {type_line} tied to the announced vote block sequence.",
-            "Watch for UC agreement/UC request or cloture-related schedule changes that can move vote timing quickly.",
+            "Watch: UC or cloture-related schedule changes can move vote timing quickly.",
         ]
     ranked = sorted([x for x in items if x.status != "historical" and should_show_in_main(x)], key=lambda x: x.signal_score, reverse=True)
     verbs = ["Monitor", "Track", "Watch", "Confirm"]
@@ -2923,7 +2923,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         if is_meaningful(item.coverage_window):
             logistics_rows.append(("Current/upcoming", item.coverage_window))
         if is_meaningful(item.coverage_action):
-            logistics_rows.append(("Operational focus", item.coverage_action))
+            logistics_rows.append(("Coverage focus", item.coverage_action))
         if is_meaningful(item.public_value):
             logistics_rows.append(("Why it matters", item.public_value))
         logistics = ""
@@ -2978,9 +2978,9 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         ctype = filter_global_boilerplate(item.coverage_type)
         if is_meaningful(ctype) and ctype != "Committee meeting": logistics_rows.append(("Coverage type", ctype))
         lc = filter_global_boilerplate(item.legislative_context)
-        if is_meaningful(lc) and lc != "A Senate committee is holding a scheduled meeting or hearing.": logistics_rows.append(("Legislative context", lc))
+        if is_meaningful(lc) and lc != "A Senate committee is holding a scheduled meeting or hearing.": logistics_rows.append(("Logistics note", lc))
         pv = filter_global_boilerplate(item.public_value)
-        if is_meaningful(pv) and pv != "Official Senate committee meeting listing.": logistics_rows.append(("Why it matters", pv))
+        if is_meaningful(pv) and pv != "Official Senate committee meeting listing.": logistics_rows.append(("Coverage consequence", pv))
 
     logistics = ""
     if logistics_rows:
@@ -3003,15 +3003,15 @@ def empty_message(title: str) -> str:
         "News Events & Stakeouts": "No scheduled press events detected.",
         "Committee Meetings & Hearings": "No active committee hearings detected.",
         "Floor Remarks": "No floor remarks are driving coverage right now.",
-        "Procedural Context": "No procedural updates listed.",
-        "Recent Procedure": "No procedural actions in the last 72 hours.",
+        "Procedure Affecting Logistics": "No procedure-driven logistics updates listed.",
+        "Recent Floor Logistics": "No recent floor actions affecting press logistics.",
         "Current Coverage Signals": "No current coverage signals.",
         "Next Expected Floor Action": "No next floor action found in public schedule sources. Check Congressional Reporters, Radio-TV, and Senate floor schedule.",
         "Forward Look: Legislation & Nominations": "No votes scheduled.",
         "Coverage Timeline": "No active coverage timeline yet. Watch for votes, EBB events, or committee hearings.",
-        "Live Signals": "Live signals are disabled or no reported signals matched.",
+        "Live Signals": "Live logistics signals are disabled or no reported signals matched.",
     }
-    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No active Senate floor proceedings detected.'))}</p>"
+    return f"<p class=\"empty\">{html.escape(messages.get(title, 'No active press logistics item detected.'))}</p>"
 
 
 def _refresh_key(label: str) -> str:
@@ -3071,8 +3071,8 @@ def render_material_context_section(items: List[JoltItem], view: str) -> str:
     cards = "".join(item_card(item, view) for item in items)
     return f"""
     <section class="section">
-        <h2>Procedural Carryover</h2>
-        <p class="empty">Prior procedural action shown only because it may affect the next coverage window.</p>
+        <h2>Floor Timing Carryover</h2>
+        <p class="empty">Prior floor action shown only because it may affect the next coverage window.</p>
         {cards}
     </section>
     """
@@ -3257,12 +3257,12 @@ def _window_label(certainty: str) -> str:
 
 def _status_label(score: float) -> str:
     if score >= 80:
-        return "Floor Consideration — Executive Session"
+        return "Floor coverage window"
     if score >= 60:
-        return "Floor Consideration — Executive Session"
+        return "Floor coverage window"
     if score >= 40:
-        return "Floor Consideration — Executive Session"
-    return "Pro Forma Period (no legislative business)"
+        return "Floor coverage window"
+    return "Pro forma period (no floor coverage window)"
 
 
 def procedural_buckets(items: List[JoltItem], now: datetime) -> Tuple[List[JoltItem], List[JoltItem]]:
@@ -3643,18 +3643,18 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "upcoming",
             "cloture_vote_window",
             "Upcoming",
-            "Expected procedural focus: debate-limit vote and post-vote follow-up.",
-            "A cloture vote can limit debate and move the Senate toward final action.",
+            "Watch timing: cloture vote may create a defined floor coverage window and post-vote follow-up.",
+            "A cloture vote can create a predictable floor coverage window without predicting the outcome.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
     elif expected_votes and not vote_block:
         signals.append(make_coverage_signal_item(
-            "Scheduled procedural vote window listed in public floor schedule.",
+            "Scheduled floor vote window listed in public floor schedule.",
             "upcoming",
             "scheduled_floor_action",
             "Upcoming",
             "Monitor the floor schedule and roll call feeds for final timing and vote subjects.",
-            "A scheduled procedural vote can change the floor sequence and coverage plan.",
+            "A scheduled floor vote can change reporter positioning and staffing.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
 
@@ -3667,8 +3667,8 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "upcoming",
             "scheduled_floor_action",
             "Upcoming",
-            "Operational focus: convening time as the next checkpoint for floor movement and leader remarks.",
-            "Convening can open the next procedural window even before votes are announced.",
+            "Coverage focus: convening time is the next checkpoint for floor movement and leader remarks.",
+            "Convening can create a floor coverage window even before votes are announced.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
 
@@ -3692,12 +3692,12 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
         status = "current" if any(item.status in {"current", "active", "live"} for item in floor_items) else "upcoming"
         timing = "Current" if status == "current" else "Upcoming"
         signals.append(make_coverage_signal_item(
-            "Active floor or scheduled procedural movement listed in public sources." if status == "current" else "Scheduled floor action listed in public sources.",
+            "Active floor activity listed in public sources." if status == "current" else "Scheduled floor coverage checkpoint listed in public sources.",
             status,
             "major_procedural_transition",
             timing,
-            "Monitor floor proceedings, leadership movement, and official schedule updates.",
-            "Floor procedural movement can change vote timing, access windows, and story priority.",
+            "Monitor floor activity, leadership movement, and official schedule updates.",
+            "Floor activity can change vote timing, access windows, and reporter staffing.",
         ))
 
     return signals[:5]
@@ -3785,7 +3785,7 @@ def dashboard(
         floor_remarks_items = build_floor_remarks(all_groups.get("Remarks", []))
         procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
         now = datetime.now()
-        recent_procedure, _background_procedure = procedural_buckets(procedural_items, now)
+        _recent_procedure, _background_procedure = procedural_buckets(procedural_items, now)
         activity_candidates: List[JoltItem] = []
         for activity_category in ["Earlier Floor Activity", "Schedule", "Votes", "Floor Action", "Committee Meetings & Hearings"]:
             activity_candidates.extend(all_groups.get(activity_category, []))
@@ -3812,11 +3812,11 @@ def dashboard(
         else:
             vote_block = (forward_context.get("schedule_context", {}) or {}).get("vote_block", {})
             next_floor_date = vote_block.get("date_label")
-            ticker_status = f"Pro Forma Period (no legislative business) — next floor activity {next_floor_date}" if next_floor_date else "Pro Forma Period (no legislative business)"
+            ticker_status = f"Pro forma period — next floor coverage checkpoint {next_floor_date}" if next_floor_date else "Pro forma period (no floor coverage window)"
             ticker_location = "No active coverage location"
             coverage_timing = "No active window"
             watch_list = "Leadership, EBB, committee schedule"
-            ticker_why = "No votes scheduled, and current public sources do not show active floor proceedings."
+            ticker_why = "No votes scheduled, and current public sources do not show an active floor coverage window."
             ticker_guidance = "Monitor for new floor activity, EBB postings, and committee schedule updates."
 
         today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
@@ -4152,7 +4152,7 @@ def dashboard(
             <header class="app-header">
                 <div class="wrap">
                     <h1>{APP_NAME}</h1>
-                    <div class="sub">{today} · Real-time Senate operational awareness for congressional reporters</div>
+                    <div class="sub">{today} · Senate press logistics for Capitol Hill reporters, producers, and gallery-adjacent press users</div>
                     <div class="sub">Sources: Congressional Reporters · EBB · Congress.gov · Committee Schedules</div>
                     <div class="live-controls" role="group" aria-label="Live controls">
                         <button class="button" type="button" id="refresh-button">Refresh</button>
@@ -4170,24 +4170,23 @@ def dashboard(
 
                 {render_signal_summary(signal_reasons, len(groups.get("Votes", [])), signal_scope)}
 
-                <section class="section" data-refresh-key="next-expected-floor-action"><h2>Next Expected Floor Action</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
+                <section class="section" data-refresh-key="next-expected-floor-action"><h2>Next Expected Floor Coverage Window</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
 
-                {'<div hidden data-refresh-key="top-actions"></div>' if current_coverage_signals else f'<section class="section" data-refresh-key="top-actions"><h2>Operational Focus</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>'}
+                {'<div hidden data-refresh-key="top-actions"></div>' if current_coverage_signals else f'<section class="section" data-refresh-key="top-actions"><h2>Press Logistics Focus</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>'}
 
                 {section("Senate Floor Activity", groups.get("Schedule", []), view, hide_empty=True)}
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
-                <section class="section" data-refresh-key="forward-look-legislation-nominations"><h2>Forward Look: Legislation & Nominations</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
+                <section class="section" data-refresh-key="forward-look-legislation-nominations"><h2>Upcoming Vote / Floor Coverage Windows</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
                 {section("News Events & Stakeouts", groups.get("Events", []), view, hide_empty=True)}
                 {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view) if groups.get("House / Joint Coverage Notes", []) else ""}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view, hide_empty=True)}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True, hide_empty=True)}
-                {section("Recent Procedure", recent_procedure, view, collapsed=True, hide_empty=True)}
                 {section("Current Coverage Signals", current_coverage_signals, view, collapsed=True, hide_empty=True)}
                 {render_material_context_section(material_context, view) if material_context else ""}
 
                 <section class="signup-card" aria-labelledby="alerts-signup-heading">
                     <h2 id="alerts-signup-heading">Get Senate JOLT alerts</h2>
-                    <p>Receive email alerts for major Senate schedule changes, vote windows, media events, and high-value coverage signals.</p>
+                    <p>Receive email alerts for major Senate schedule changes, vote windows, media events, and press logistics signals.</p>
                     <form id="alerts-signup-form" action="/alerts/signup" method="post" novalidate>
                         <label class="sr-only" for="alerts-email">Email address</label>
                         <input id="alerts-email" name="email" type="email" placeholder="Email address" autocomplete="email" required>
