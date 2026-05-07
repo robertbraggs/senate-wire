@@ -37,7 +37,18 @@
 
   function replaceIfChanged(current, next) {
     if (!current || !next || current.outerHTML === next.outerHTML) return current;
+    const active = document.activeElement;
+    const minHeight = current.offsetHeight;
+    if (minHeight) current.style.minHeight = `${minHeight}px`;
     current.replaceWith(next);
+    if (minHeight) {
+      next.style.minHeight = `${minHeight}px`;
+      window.requestAnimationFrame(() => { next.style.minHeight = ""; });
+    }
+    if (active && active.id) {
+      const restored = document.getElementById(active.id);
+      if (restored && typeof restored.focus === "function") restored.focus({ preventScroll: true });
+    }
     return next;
   }
 
@@ -55,12 +66,20 @@
       const key = nextNode.dataset.refreshKey;
       nextKeys.add(key);
       const currentNode = currentMain.querySelector(`[data-refresh-key="${selectorEscape(key)}"]`);
-      const inserted = replaceIfChanged(currentNode, nextNode);
-      if (!currentNode && inserted) currentMain.appendChild(inserted);
+      if (currentNode) {
+        replaceIfChanged(currentNode, nextNode);
+      } else {
+        currentMain.appendChild(nextNode);
+      }
     });
 
     currentMain.querySelectorAll("[data-refresh-key]").forEach((currentNode) => {
-      if (!nextKeys.has(currentNode.dataset.refreshKey)) currentNode.remove();
+      if (!nextKeys.has(currentNode.dataset.refreshKey)) {
+        const placeholder = document.createElement("div");
+        placeholder.hidden = true;
+        placeholder.dataset.refreshKey = currentNode.dataset.refreshKey;
+        currentNode.replaceWith(placeholder);
+      }
     });
 
     restoreAccordionState(currentMain, openState);
@@ -68,6 +87,7 @@
 
   async function refreshLiveData(manual) {
     const y = window.scrollY;
+    const x = window.scrollX;
     try {
       const response = await fetch(`${window.location.pathname}?live=1&_=${Date.now()}`, {
         cache: "no-store",
@@ -93,7 +113,10 @@
       setLastUpdated(new Date());
       setOfflineWarning(false);
       maybeSendNotifications();
-      window.scrollTo({ top: y, behavior: "auto" });
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ left: x, top: y, behavior: "auto" });
+        window.requestAnimationFrame(() => window.scrollTo({ left: x, top: y, behavior: "auto" }));
+      });
     } catch (error) {
       setOfflineWarning(true);
       if (manual) console.warn("Senate JOLT live refresh failed", error);
