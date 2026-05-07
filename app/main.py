@@ -2677,6 +2677,21 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     return LAST_FORWARD_SCHEDULE_DEBUG
 
 
+def _displayable_pro_formas(schedule_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return pro forma windows that still matter for homepage logistics display."""
+    displayable: List[Dict[str, Any]] = []
+    for pro_forma in schedule_context.get("pro_formas") or []:
+        if not isinstance(pro_forma, dict):
+            continue
+        label_text = clean(" ".join(str(pro_forma.get(key) or "") for key in ("text", "date_label", "time_label"))).lower()
+        if not label_text or label_text == "none announced" or "none announced" in label_text:
+            continue
+        timing_state = str(pro_forma.get("timing_state") or "UPCOMING").upper()
+        if timing_state in {"UPCOMING", "ACTIVE"}:
+            displayable.append(pro_forma)
+    return displayable
+
+
 def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[str, Any]) -> str:
     def classify_expected_vote(text: str) -> Tuple[str, str]:
         lower = clean(text).lower()
@@ -2691,11 +2706,11 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         return "Expected floor vote", "Use the listed time as the next floor coverage checkpoint."
     schedule_context = context.get("schedule_context", {}) if context else {}
     if schedule_context and (schedule_context.get("next_convening") or schedule_context.get("pro_formas") or schedule_context.get("vote_block") or schedule_context.get("expected_votes")):
-        pro_formas = schedule_context.get("pro_formas", [])
-        source_text = context.get("forward_schedule_source_text", "") if context else ""
+        pro_formas = _displayable_pro_formas(schedule_context)
         pro_forma_html = "".join(
             f"<li>{html.escape(p.get('date_label', ''))} · {html.escape(p.get('time_label', ''))}</li>" for p in pro_formas
-        ) or "<li>None announced</li>"
+        )
+        pro_forma_section = f"<div><strong>Pro forma sessions:</strong><ul>{pro_forma_html}</ul></div>" if pro_forma_html else ""
         next_convening = schedule_context.get("next_convening", {})
         vote_block = schedule_context.get("vote_block", {})
         expected_votes = schedule_context.get("expected_votes", [])
@@ -2716,16 +2731,33 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
                 votes_html = "<li>Expected votes pending official listing</li>"
         else:
             votes_html = "<li>No vote block announced.</li>"
+
+        if pro_formas and not vote_block:
+            logistics_note = "A pro forma sequence is the active schedule explanation; monitor for the next posted floor business window."
+            coverage_timing = "Pro forma timing is the current coverage checkpoint until a floor business window is announced."
+        elif pro_formas:
+            logistics_note = "Pro forma timing remains relevant, but the announced vote sequence is the next clear floor staffing checkpoint."
+            coverage_timing = "Next major floor coverage window is the announced vote sequence."
+        elif vote_block:
+            logistics_note = "The announced vote sequence is the next clear floor staffing checkpoint."
+            coverage_timing = "Next major floor coverage window is the announced vote sequence."
+        elif next_convening:
+            logistics_note = "The scheduled convening is the next clear floor staffing checkpoint."
+            coverage_timing = "Coverage focus begins around the next announced convening time."
+        else:
+            logistics_note = "Monitor official Senate sources for the next actionable floor staffing checkpoint."
+            coverage_timing = "No floor coverage window is currently announced."
+
         return f"""
         <div class='card'>
             <!-- May 11 forward schedule fixed path active -->
             <div class='logistics'>
-                <div><strong>Pro forma sessions:</strong><ul>{pro_forma_html}</ul></div>
+                {pro_forma_section}
                 <div><strong>Senate next convenes:</strong> {html.escape(convene_label)}</div>
                 <div><strong>Next expected floor vote window:</strong> {html.escape(vote_label)}</div>
                 <div><strong>Expected votes:</strong><ol>{votes_html}</ol></div>
-                <div><strong>Logistics note:</strong> The Senate is scheduled to return after any pro forma sessions. The announced vote block is the next clear floor staffing checkpoint.</div>
-                <div><strong>Coverage timing:</strong> Next major floor coverage window is the announced vote sequence.</div>
+                <div><strong>Logistics note:</strong> {html.escape(logistics_note)}</div>
+                <div><strong>Coverage timing:</strong> {html.escape(coverage_timing)}</div>
             </div>
         </div>
         """

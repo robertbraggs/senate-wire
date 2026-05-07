@@ -583,3 +583,81 @@ def test_next_expected_floor_action_omits_expired_pro_forma_and_promotes_vote_wi
     assert "Senate next convenes:</strong> May 11 · 3:00 p.m." in rendered
     assert "Next expected floor vote window:</strong> May 11 · approx. 5:30 p.m." in rendered
     assert "Warsh" in rendered
+
+
+def test_homepage_logistics_card_hides_expired_pro_forma_section_after_window_passes():
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Example nomination."],
+    }, datetime(2026, 5, 7, 13, 0))
+
+    rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
+
+    assert "Pro forma sessions" not in rendered
+    assert "None announced" not in rendered
+    assert "May 7 · 10:00 a.m." not in rendered
+    assert "Senate next convenes:</strong> May 11 · 3:00 p.m." in rendered
+    assert "Next expected floor vote window:</strong> May 11 · approx. 5:30 p.m." in rendered
+
+
+def test_homepage_logistics_card_does_not_render_none_announced_pro_forma_section():
+    schedule_context = {
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Example nomination."],
+    }
+
+    rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
+
+    assert "Pro forma sessions" not in rendered
+    assert "None announced" not in rendered
+    assert "The Senate is scheduled to return after any pro forma sessions" not in rendered
+    assert "The announced vote sequence is the next clear floor staffing checkpoint." in rendered
+
+
+def test_homepage_logistics_card_renders_upcoming_pro_forma_when_relevant():
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "2:00 p.m."}],
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+    }, datetime(2026, 5, 7, 12, 0))
+
+    rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
+
+    assert "Pro forma sessions" in rendered
+    assert "May 7 · 2:00 p.m." in rendered
+    assert "pro forma sequence" in rendered.lower()
+
+
+def test_homepage_logistics_card_promotes_vote_copy_when_pro_forma_suppressed():
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Example nomination."],
+    }, datetime(2026, 5, 7, 13, 0))
+
+    rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
+
+    assert "Pro forma sessions" not in rendered
+    assert "Logistics note:</strong> The announced vote sequence is the next clear floor staffing checkpoint." in rendered
+    assert "Coverage timing:</strong> Next major floor coverage window is the announced vote sequence." in rendered
+
+
+def test_homepage_logistics_card_structure_preserved_when_pro_forma_suppressed():
+    schedule_context = main.apply_schedule_window_lifecycle({
+        "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Example nomination."],
+    }, datetime(2026, 5, 7, 13, 0))
+
+    rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
+
+    assert "<div class='card'>" in rendered
+    assert "<div class='logistics'>" in rendered
+    assert "Senate next convenes:</strong>" in rendered
+    assert "Next expected floor vote window:</strong>" in rendered
+    assert "Expected votes:</strong><ol>" in rendered
+    assert "Logistics note:</strong>" in rendered
+    assert "Coverage timing:</strong>" in rendered
