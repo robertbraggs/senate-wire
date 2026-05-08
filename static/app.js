@@ -1,11 +1,23 @@
 (function () {
   const REFRESH_INTERVAL_MS = 60000;
+  const CURRENT_TIME_REFRESH_MS = 30000;
   const DEDUPE_STORAGE_KEY = "senateJoltRecentDedupeKeys";
   const ALERT_PERMISSION_KEY = "senateJoltNotificationPermissionState";
   const MAX_DEDUPE_KEYS = 80;
 
   function formatTime(date) {
     return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  }
+
+  function formatDate(date) {
+    return date.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  }
+
+  function refreshCurrentDateTime(date) {
+    const current = date || new Date();
+    const dateNode = document.getElementById("current-date");
+    if (dateNode) dateNode.textContent = formatDate(current);
+    document.body.dataset.currentDate = current.toISOString();
   }
 
   function setLastUpdated(date) {
@@ -110,7 +122,9 @@
       const eventsNode = doc.getElementById("notification-events");
       const currentEventsNode = document.getElementById("notification-events");
       if (eventsNode && currentEventsNode && currentEventsNode.textContent !== eventsNode.textContent) currentEventsNode.textContent = eventsNode.textContent;
-      setLastUpdated(new Date());
+      const refreshedAt = new Date();
+      refreshCurrentDateTime(refreshedAt);
+      setLastUpdated(refreshedAt);
       setOfflineWarning(false);
       maybeSendNotifications();
       window.requestAnimationFrame(() => {
@@ -218,19 +232,33 @@
   function setupServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/static/service-worker.js").catch((error) => {
+      navigator.serviceWorker.register("/service-worker.js").catch((error) => {
         console.warn("Senate JOLT service worker registration failed", error);
       });
     });
+  }
+
+  function refreshAfterResume() {
+    const now = new Date();
+    refreshCurrentDateTime(now);
+    setLastUpdated(now);
+    refreshLiveData(false);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     setupServiceWorker();
     setupNotifications();
     setupEmailSignup();
-    setLastUpdated(new Date(document.body.dataset.lastUpdated || Date.now()));
+    refreshCurrentDateTime(new Date());
+    setLastUpdated(new Date());
     const refresh = document.getElementById("refresh-button");
     if (refresh) refresh.addEventListener("click", () => refreshLiveData(true));
     window.setInterval(() => refreshLiveData(false), REFRESH_INTERVAL_MS);
+    window.setInterval(() => refreshCurrentDateTime(new Date()), CURRENT_TIME_REFRESH_MS);
+    window.addEventListener("pageshow", refreshAfterResume);
+    window.addEventListener("focus", refreshAfterResume);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) refreshAfterResume();
+    });
   });
 })();

@@ -69,7 +69,11 @@ def manifest():
 
 @app.get("/service-worker.js", include_in_schema=False)
 def service_worker():
-    return FileResponse(BASE_DIR / "static" / "service-worker.js", media_type="application/javascript")
+    return FileResponse(
+        BASE_DIR / "static" / "service-worker.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"},
+    )
 
 
 COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly/2026/04/27?q=%7B%22chamber%22%3A%22Senate%22%7D"
@@ -3968,7 +3972,7 @@ def pwa_smoke_test() -> Dict[str, Any]:
     app_js_text = app_js_path.read_text() if app_js_path.exists() else ""
     return {
         "manifest_loads": manifest_path.exists() and '"name": "The Senate JOLT"' in manifest_text and '"src": "/static/icon.svg"' in manifest_text,
-        "service_worker_registers": sw_path.exists() and "addEventListener(\"fetch\"" in sw_text and "APP_SHELL" in sw_text and "serviceWorker" in app_js_text and "/static/service-worker.js" in app_js_text,
+        "service_worker_registers": sw_path.exists() and "addEventListener(\"fetch\"" in sw_text and "APP_SHELL" in sw_text and "serviceWorker" in app_js_text and "/service-worker.js" in app_js_text,
     }
 
 
@@ -4046,6 +4050,9 @@ def dashboard(
             ticker_guidance = "Monitor for new floor activity, EBB postings, and committee schedule updates."
 
         today = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
+        today_parts = today.split(", ", 1)
+        today_weekday = today_parts[0] if today_parts else today
+        today_rest = today_parts[1] if len(today_parts) > 1 else ""
 
         quick_links = render_quick_link_groups()
 
@@ -4378,7 +4385,7 @@ def dashboard(
             <header class="app-header">
                 <div class="wrap">
                     <h1>{APP_NAME}</h1>
-                    <div class="sub">{today} · Senate press logistics for Capitol Hill reporters, producers, and gallery-adjacent press users</div>
+                    <div class="sub"><span id="current-date" data-server-rendered-date="{html.escape(today)}"><span class="date-weekday">{html.escape(today_weekday)}</span>{", " + html.escape(today_rest) if today_rest else ""}</span> · Senate press logistics for Capitol Hill reporters, producers, and gallery-adjacent press users</div>
                     <div class="sub">Sources: Congressional Reporters · EBB · Congress.gov · Committee Schedules</div>
                     <div class="live-controls" role="group" aria-label="Live controls">
                         <button class="button" type="button" id="refresh-button">Refresh</button>
@@ -4430,12 +4437,19 @@ def dashboard(
                 <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
             <script id="notification-events" type="application/json">{notification_events_json}</script>
-            <script src="/static/app.js"></script>
+            <script src="/static/app.js?v=20260508"></script>
         </body>
         </html>
         """
 
-        return page
+        return HTMLResponse(
+            page,
+            headers={
+                "Cache-Control": "no-store, max-age=0, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     except Exception as exc:
         return HTMLResponse(f"<h1>{APP_NAME} error</h1><p>{html.escape(sanitize_error_message(exc))}</p>", status_code=500)
