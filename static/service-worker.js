@@ -1,4 +1,4 @@
-const CACHE_NAME = "senate-jolt-shell-v2";
+const CACHE_NAME = "senate-jolt-shell-v3";
 const APP_SHELL = [
   "/static/manifest.json",
   "/static/icon.svg",
@@ -37,6 +37,11 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Senate data and rendered pages are network-only so stale schedules are not presented as live.
+  // Senate data and rendered pages are network-only so stale schedules and date-bearing HTML are not presented as live.
+  if (event.request.mode === "navigate" || url.pathname === "/" || url.searchParams.has("live")) {
+    event.respondWith(fetch(new Request(event.request, { cache: "no-store" })));
+    return;
+  }
+
   event.respondWith(fetch(event.request));
 });
