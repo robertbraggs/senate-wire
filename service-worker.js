@@ -1,5 +1,5 @@
-const CACHE_NAME = "senate-jolt-root-v2";
-const STATIC_ASSETS = ["/manifest.json", "/static/icon.svg", "/static/style.css"];
+const CACHE_NAME = "senate-jolt-root-v3";
+const STATIC_ASSETS = ["/manifest.json", "/static/icon.svg", "/static/style.css", "/static/app.js"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)));
@@ -23,7 +23,7 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
 
-  if (event.request.mode === "navigate" || url.pathname === "/") {
+  if (event.request.mode === "navigate" || url.pathname === "/" || url.pathname === "/events" || url.pathname === "/summary" || url.pathname === "/health" || url.searchParams.has("live")) {
     event.respondWith(fetch(new Request(event.request, { cache: "no-store" })));
     return;
   }

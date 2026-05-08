@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from urllib.parse import parse_qs
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.database import init_db
@@ -3998,6 +3998,21 @@ def notification_smoke_test() -> Dict[str, Any]:
     }
 
 
+def no_store_headers() -> Dict[str, str]:
+    return {
+        "Cache-Control": "no-store, max-age=0, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
+
+def apply_no_store_headers(response: Optional[Response]) -> None:
+    if response is None:
+        return
+    for key, value in no_store_headers().items():
+        response.headers[key] = value
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
@@ -4349,7 +4364,7 @@ def dashboard(
                 .signup-message.success {{ color: var(--color-accent-blue); }}
                 .signup-message.error {{ color: var(--color-deep-senate-navy); }}
                 .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }}
-                @media (display-mode: standalone) {{ .app-header {{ padding-top: max(10px, env(safe-area-inset-top)); }} h1 {{ font-size: 25px; }} .sub:first-of-type {{ display: none; }} }}
+                @media (display-mode: standalone) {{ .app-header {{ padding-top: max(10px, env(safe-area-inset-top)); }} h1 {{ font-size: 25px; }} #current-date {{ display: inline; }} }}
                 @media(max-width: 760px) {{
                     header {{ padding: 14px 12px; }}
                     main {{ padding: 12px; }}
@@ -4437,18 +4452,14 @@ def dashboard(
                 <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
             <script id="notification-events" type="application/json">{notification_events_json}</script>
-            <script src="/static/app.js?v=20260508"></script>
+            <script src="/static/app.js?v=20260508b"></script>
         </body>
         </html>
         """
 
         return HTMLResponse(
             page,
-            headers={
-                "Cache-Control": "no-store, max-age=0, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0",
-            },
+            headers=no_store_headers(),
         )
 
     except Exception as exc:
@@ -4526,10 +4537,11 @@ def debug_alerts(request: Request, token: str = Query("")):
 
 
 @app.get("/events")
-def events_endpoint(q: Optional[str] = None, view: str = "reporter", earlier: bool = False):
+def events_endpoint(response: Response = None, q: Optional[str] = None, view: str = "reporter", earlier: bool = False):
     all_items = get_all_items()
     items = filter_items(all_items, q, view, show_earlier=earlier)
 
+    apply_no_store_headers(response)
     return {
         "app": APP_NAME,
         "view": view,
@@ -4538,11 +4550,12 @@ def events_endpoint(q: Optional[str] = None, view: str = "reporter", earlier: bo
 
 
 @app.get("/summary")
-def summary_endpoint():
+def summary_endpoint(response: Response = None):
     items = get_all_items()
     groups = grouped(items)
     now_item = important_now(items)
 
+    apply_no_store_headers(response)
     return {
         "app": APP_NAME,
         "source_status": public_source_status(),
@@ -4600,7 +4613,8 @@ def debug_raw(request: Request, token: str = Query("")):
 
 
 @app.get("/health")
-def health():
+def health(response: Response = None):
+    apply_no_store_headers(response)
     return {
         "status": "ok",
         "app": APP_NAME,
