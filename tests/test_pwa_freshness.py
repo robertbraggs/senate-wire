@@ -16,7 +16,7 @@ def test_homepage_exposes_client_refreshable_current_date_hook():
 
     assert 'id="current-date"' in main_source
     assert 'data-server-rendered-date' in main_source
-    assert '<script src="/static/app.js?v=20260508b"></script>' in main_source
+    assert '<script src="/static/app.js?v=20260509a"></script>' in main_source
     assert 'def no_store_headers()' in main_source
     assert '"Cache-Control": "no-store, max-age=0, must-revalidate"' in main_source
     assert '"Cache-Control": "no-cache, max-age=0, must-revalidate"' in main_source

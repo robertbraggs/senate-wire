@@ -4325,7 +4325,7 @@ def dashboard(
                 .live-controls {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }}
                 .button {{ min-height: 44px; border: 0; border-radius: 999px; padding: 11px 16px; background: var(--color-primary-navy); color: var(--color-card-background); font-weight: 800; cursor: pointer; }}
                 .button.secondary {{ background: var(--color-primary-navy); color: var(--color-card-background); }}
-                .last-updated {{ font-size: 14px; opacity: .95; }}
+                .last-updated {{ display: inline-block; min-width: 170px; font-size: 14px; opacity: .95; font-variant-numeric: tabular-nums; }}
                 .alert-banner {{ position: sticky; top: 0; z-index: 30; display: grid; gap: 4px; padding: 12px 16px; background: var(--color-deep-senate-navy); color: var(--color-card-background); box-shadow: 0 8px 20px rgba(15, 23, 42, .22); }}
                 .alert-banner strong {{ font-size: 17px; }}
                 .offline-warning {{ margin-bottom: 12px; padding: 12px 14px; background: var(--color-light-background); border: 1px solid var(--color-border-gray); border-radius: 14px; color: var(--color-text-muted); font-weight: 700; }}
@@ -4452,7 +4452,7 @@ def dashboard(
                 <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
             <script id="notification-events" type="application/json">{notification_events_json}</script>
-            <script src="/static/app.js?v=20260508b"></script>
+            <script src="/static/app.js?v=20260509a"></script>
         </body>
         </html>
         """

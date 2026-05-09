@@ -4,6 +4,72 @@
   const DEDUPE_STORAGE_KEY = "senateJoltRecentDedupeKeys";
   const ALERT_PERMISSION_KEY = "senateJoltNotificationPermissionState";
   const MAX_DEDUPE_KEYS = 80;
+  const SCROLL_IDLE_MS = 700;
+
+  function debugRefreshEnabled() {
+    if (new URLSearchParams(window.location.search).has("debug_refresh")) return true;
+    try { return localStorage.getItem("senateJoltDebugRefresh") === "true"; }
+    catch (_) { return false; }
+  }
+
+  const DEBUG_REFRESH = debugRefreshEnabled();
+  let scrollVersion = 0;
+  let scrolling = false;
+  let scrollIdleTimer = null;
+  let refreshInFlight = false;
+  let pendingRefresh = false;
+  let pendingRefreshText = null;
+
+  function debugLog(message, detail) {
+    if (!DEBUG_REFRESH) return;
+    console.debug(`[Senate JOLT refresh] ${message}`, detail || "");
+  }
+
+  function captureRefreshState(root) {
+    return {
+      x: window.scrollX,
+      y: window.scrollY,
+      scrollVersion,
+      activeElementId: document.activeElement && document.activeElement.id ? document.activeElement.id : "",
+      accordions: root ? accordionState(root) : {}
+    };
+  }
+
+  function restoreScrollIfStable(state) {
+    if (!state || scrollVersion !== state.scrollVersion) {
+      debugLog("scroll restore skipped", { before: state && state.y, after: window.scrollY, scrollVersion });
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ left: state.x, top: state.y, behavior: "auto" });
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ left: state.x, top: state.y, behavior: "auto" });
+        debugLog("scroll restored", { before: state.y, after: window.scrollY });
+      });
+    });
+  }
+
+  function markScrolling() {
+    scrolling = true;
+    scrollVersion += 1;
+    if (scrollIdleTimer) window.clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = window.setTimeout(() => {
+      scrolling = false;
+      if (pendingRefresh || pendingRefreshText) {
+        debugLog("deferred refresh released", { scrollY: window.scrollY });
+        if (pendingRefreshText) {
+          const text = pendingRefreshText;
+          pendingRefreshText = null;
+          pendingRefresh = false;
+          applyRefreshText(text, false);
+        } else {
+          pendingRefresh = false;
+          refreshLiveData(false);
+        }
+      }
+    }, SCROLL_IDLE_MS);
+  }
+
 
   function formatTime(date) {
     return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
@@ -54,21 +120,71 @@
     });
   }
 
-  function replaceIfChanged(current, next) {
-    if (!current || !next || current.outerHTML === next.outerHTML) return current;
-    const active = document.activeElement;
-    const minHeight = current.offsetHeight;
-    if (minHeight) current.style.minHeight = `${minHeight}px`;
-    current.replaceWith(next);
+  function withReservedHeight(node, update) {
+    const minHeight = node.offsetHeight;
+    if (minHeight) node.style.minHeight = `${minHeight}px`;
+    update();
     if (minHeight) {
-      next.style.minHeight = `${minHeight}px`;
-      window.requestAnimationFrame(() => { next.style.minHeight = ""; });
+      window.requestAnimationFrame(() => { node.style.minHeight = ""; });
     }
-    if (active && active.id) {
-      const restored = document.getElementById(active.id);
-      if (restored && typeof restored.focus === "function") restored.focus({ preventScroll: true });
+  }
+
+  function patchAttributes(current, next) {
+    Array.from(current.attributes).forEach((attribute) => {
+      if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    });
+    Array.from(next.attributes).forEach((attribute) => {
+      if (current.getAttribute(attribute.name) !== attribute.value) {
+        current.setAttribute(attribute.name, attribute.value);
+      }
+    });
+  }
+
+  function patchDetailsInPlace(currentDetails, nextDetails) {
+    const wasOpen = currentDetails.open;
+    patchAttributes(currentDetails, nextDetails);
+    currentDetails.open = wasOpen;
+
+    const currentSummary = currentDetails.querySelector(":scope > summary");
+    const nextSummary = nextDetails.querySelector(":scope > summary");
+    if (currentSummary && nextSummary && currentSummary.innerHTML !== nextSummary.innerHTML) {
+      currentSummary.innerHTML = nextSummary.innerHTML;
     }
+
+    const nextBody = Array.from(nextDetails.childNodes).filter((node) => node.nodeName.toLowerCase() !== "summary");
+    Array.from(currentDetails.childNodes).forEach((node) => {
+      if (node.nodeName.toLowerCase() !== "summary") node.remove();
+    });
+    nextBody.forEach((node) => currentDetails.appendChild(node));
+    currentDetails.open = wasOpen;
+  }
+
+  function patchElementInPlace(current, next) {
+    if (!current || !next || current.outerHTML === next.outerHTML) return current;
+
+    if (current.tagName === next.tagName) {
+      withReservedHeight(current, () => {
+        patchAttributes(current, next);
+        const currentDetails = current.matches("details[data-accordion-key]") ? current : current.querySelector(":scope details[data-accordion-key]");
+        const nextDetails = next.matches("details[data-accordion-key]") ? next : next.querySelector(":scope details[data-accordion-key]");
+        if (currentDetails && nextDetails) {
+          patchDetailsInPlace(currentDetails, nextDetails);
+        } else {
+          current.innerHTML = next.innerHTML;
+        }
+      });
+      return current;
+    }
+
+    const minHeight = current.offsetHeight;
+    if (minHeight) next.style.minHeight = `${minHeight}px`;
+    current.replaceWith(next);
+    if (minHeight) window.requestAnimationFrame(() => { next.style.minHeight = ""; });
     return next;
+  }
+
+  function replaceIfChanged(current, next) {
+    return patchElementInPlace(current, next);
   }
 
   function selectorEscape(value) {
@@ -76,9 +192,9 @@
     return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
   }
 
-  function patchMainContent(nextMain, currentMain) {
+  function patchMainContent(nextMain, currentMain, preservedState) {
     if (!nextMain || !currentMain) return;
-    const openState = accordionState(currentMain);
+    const openState = preservedState && preservedState.accordions ? preservedState.accordions : accordionState(currentMain);
     const nextKeys = new Set();
 
     nextMain.querySelectorAll("[data-refresh-key]").forEach((nextNode) => {
@@ -86,7 +202,7 @@
       nextKeys.add(key);
       const currentNode = currentMain.querySelector(`[data-refresh-key="${selectorEscape(key)}"]`);
       if (currentNode) {
-        replaceIfChanged(currentNode, nextNode);
+        patchElementInPlace(currentNode, nextNode);
       } else {
         currentMain.appendChild(nextNode);
       }
@@ -95,34 +211,37 @@
     currentMain.querySelectorAll("[data-refresh-key]").forEach((currentNode) => {
       if (!nextKeys.has(currentNode.dataset.refreshKey)) {
         const placeholder = document.createElement("div");
-        placeholder.hidden = true;
+        const minHeight = currentNode.offsetHeight;
+        placeholder.setAttribute("aria-hidden", "true");
         placeholder.dataset.refreshKey = currentNode.dataset.refreshKey;
+        placeholder.dataset.stabilizePlaceholder = "true";
+        if (minHeight) placeholder.style.minHeight = `${minHeight}px`;
         currentNode.replaceWith(placeholder);
+        if (minHeight) window.requestAnimationFrame(() => { placeholder.style.minHeight = "0px"; });
       }
     });
 
     restoreAccordionState(currentMain, openState);
   }
 
-  async function refreshLiveData(manual) {
-    const y = window.scrollY;
-    const x = window.scrollX;
+  function applyRefreshText(text, manual) {
+    const currentMain = document.getElementById("main-content");
+    const state = captureRefreshState(currentMain);
+    if (!manual && scrolling) {
+      pendingRefreshText = text;
+      debugLog("refresh apply deferred due to scrolling", { scrollY: state.y });
+      return;
+    }
     try {
-      const response = await fetch(`${window.location.pathname}?live=1&_=${Date.now()}`, {
-        cache: "no-store",
-        headers: { "X-Senate-Jolt-Live": "1" }
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const text = await response.text();
       const doc = new DOMParser().parseFromString(text, "text/html");
       const nextMain = doc.getElementById("main-content");
-      const currentMain = document.getElementById("main-content");
-      patchMainContent(nextMain, currentMain);
+      debugLog("refresh applying", { scrollY: state.y, activeElementId: state.activeElementId });
+      patchMainContent(nextMain, currentMain, state);
       setupEmailSignup();
 
       const nextAlert = doc.querySelector(".alert-banner");
       const currentAlert = document.querySelector(".alert-banner");
-      if (currentAlert && nextAlert) replaceIfChanged(currentAlert, nextAlert);
+      if (currentAlert && nextAlert) patchElementInPlace(currentAlert, nextAlert);
       if (currentAlert && !nextAlert) currentAlert.remove();
       if (!currentAlert && nextAlert) document.body.prepend(nextAlert);
 
@@ -134,13 +253,40 @@
       setLastUpdated(refreshedAt);
       setOfflineWarning(false);
       maybeSendNotifications();
-      window.requestAnimationFrame(() => {
-        window.scrollTo({ left: x, top: y, behavior: "auto" });
-        window.requestAnimationFrame(() => window.scrollTo({ left: x, top: y, behavior: "auto" }));
-      });
+      restoreScrollIfStable(state);
+      debugLog("refresh applied", { before: state.y, after: window.scrollY });
     } catch (error) {
       setOfflineWarning(true);
       if (manual) console.warn("Senate JOLT live refresh failed", error);
+    }
+  }
+
+  async function refreshLiveData(manual) {
+    if (!manual && scrolling) {
+      pendingRefresh = true;
+      debugLog("refresh fetch deferred due to scrolling", { scrollY: window.scrollY });
+      return;
+    }
+    if (refreshInFlight) {
+      if (!manual) pendingRefresh = true;
+      return;
+    }
+    refreshInFlight = true;
+    const state = captureRefreshState(document.getElementById("main-content"));
+    debugLog("refresh started", { manual: !!manual, scrollY: state.y });
+    try {
+      const response = await fetch(`${window.location.pathname}?live=1&_=${Date.now()}`, {
+        cache: "no-store",
+        headers: { "X-Senate-Jolt-Live": "1" }
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const text = await response.text();
+      applyRefreshText(text, manual);
+    } catch (error) {
+      setOfflineWarning(true);
+      if (manual) console.warn("Senate JOLT live refresh failed", error);
+    } finally {
+      refreshInFlight = false;
     }
   }
 
@@ -258,11 +404,25 @@
     }
   }
 
+  function setupLayoutShiftLogging() {
+    if (!DEBUG_REFRESH || !("PerformanceObserver" in window) || setupLayoutShiftLogging.bound) return;
+    setupLayoutShiftLogging.bound = true;
+    try {
+      const observer = new PerformanceObserver((list) => {
+        list.getEntries().forEach((entry) => {
+          if (!entry.hadRecentInput) debugLog("layout shift", { value: entry.value, scrollY: window.scrollY });
+        });
+      });
+      observer.observe({ type: "layout-shift", buffered: true });
+    } catch (_) {}
+  }
+
   function boot() {
     refreshCurrentDisplays(new Date());
     setupServiceWorker();
     setupNotifications();
     setupEmailSignup();
+    setupLayoutShiftLogging();
     const refresh = document.getElementById("refresh-button");
     if (refresh && refresh.dataset.bound !== "true") {
       refresh.dataset.bound = "true";
@@ -270,6 +430,7 @@
     }
   }
 
+  window.addEventListener("scroll", markScrolling, { passive: true });
   boot();
   document.addEventListener("DOMContentLoaded", boot);
   window.addEventListener("load", () => refreshCurrentDisplays(new Date()));
