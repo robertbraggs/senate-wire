@@ -544,14 +544,15 @@ def test_homepage_status_state_machine_active_upcoming_completed_low_activity():
 def test_refresh_script_patches_sections_and_preserves_scroll_and_accordions():
     script = (main.BASE_DIR / "static" / "app.js").read_text()
 
-    assert "patchMainContent(nextMain, currentMain)" in script
-    assert "accordionState(currentMain)" in script
+    assert "patchMainContent(nextMain, currentMain, state)" in script
+    assert "accordionState(root)" in script
     assert "restoreAccordionState(currentMain, openState)" in script
-    assert "window.scrollTo({ left: x, top: y, behavior: \"auto\" })" in script
+    assert "restoreScrollIfStable(state)" in script
+    assert "window.scrollTo({ left: state.x, top: state.y, behavior: \"auto\" })" in script
     assert "currentMain.innerHTML = nextMain.innerHTML" not in script
     assert "document.createElement(\"div\")" in script
     assert "placeholder.dataset.refreshKey" in script
-    assert "current.replaceWith(next)" in script
+    assert "patchElementInPlace(currentNode, nextNode)" in script
     assert "document.body.innerHTML" not in script
 
 def test_expired_schedule_signals_do_not_count_or_render():
@@ -661,3 +662,43 @@ def test_homepage_logistics_card_structure_preserved_when_pro_forma_suppressed()
     assert "Expected votes:</strong><ol>" in rendered
     assert "Logistics note:</strong>" in rendered
     assert "Coverage timing:</strong>" in rendered
+
+
+def test_refresh_script_defers_passive_updates_while_scrolling():
+    script = (main.BASE_DIR / "static" / "app.js").read_text()
+
+    assert "const SCROLL_IDLE_MS = 700" in script
+    assert 'window.addEventListener("scroll", markScrolling, { passive: true })' in script
+    assert "pendingRefresh = true" in script
+    assert "pendingRefreshText = text" in script
+    assert "refresh fetch deferred due to scrolling" in script
+    assert "if (!manual && scrolling)" in script
+
+
+def test_refresh_script_preserves_scroll_only_without_user_scroll():
+    script = (main.BASE_DIR / "static" / "app.js").read_text()
+
+    restore_body = script.split("function restoreScrollIfStable(state)", 1)[1].split("function markScrolling", 1)[0]
+    assert "scrollVersion !== state.scrollVersion" in restore_body
+    assert "scroll restore skipped" in restore_body
+    assert 'window.scrollTo({ left: state.x, top: state.y, behavior: "auto" })' in restore_body
+    assert "scrollTo(0" not in script
+    assert "scrollIntoView" not in script
+
+
+def test_refresh_script_keeps_accordions_mounted_and_does_not_force_focus():
+    script = (main.BASE_DIR / "static" / "app.js").read_text()
+    patch_body = script.split("function patchDetailsInPlace", 1)[1].split("function patchElementInPlace", 1)[0]
+
+    assert "const wasOpen = currentDetails.open" in patch_body
+    assert "currentDetails.open = wasOpen" in patch_body
+    assert "currentDetails.replaceWith" not in patch_body
+    assert ".focus(" not in script
+    assert "activeElementId" in script
+
+
+def test_header_timestamp_has_stable_width_to_avoid_reflow():
+    main_source = (main.BASE_DIR / "app" / "main.py").read_text()
+
+    assert ".last-updated {{ display: inline-block; min-width: 170px;" in main_source
+    assert "font-variant-numeric: tabular-nums" in main_source
