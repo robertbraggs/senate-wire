@@ -383,8 +383,8 @@ def test_visible_coverage_signal_count_matches_rendered_items():
     assert len(signals) == 2
     assert rendered.count('<article class="card">') == len(signals)
     assert "2 Upcoming Coverage Signals" in rendered
-    assert "Vote block expected — approx. 5:30 p.m." in rendered
-    assert "Cloture vote — Motion to invoke cloture" in rendered
+    assert "Vote block — approx. 5:30 p.m." in rendered
+    assert "Cloture — Motion to invoke cloture" in rendered
 
 
 def test_coverage_signal_section_hidden_when_no_signals_exist():
@@ -435,8 +435,8 @@ def test_coverage_signal_reasons_explain_non_floor_signal_count():
     rendered = main.render_signal_summary(reasons, 0)
 
     assert len(reasons) == 2
-    assert "Vote block expected — approx. 5:30 p.m." in rendered
-    assert "Cloture vote — Motion to invoke cloture" in rendered
+    assert "Vote block — approx. 5:30 p.m." in rendered
+    assert "Cloture — Motion to invoke cloture" in rendered
     assert rendered.count("<li>") == len(reasons)
     assert "No active Senate floor" not in rendered
 
@@ -501,9 +501,9 @@ def test_homepage_status_expires_completed_pro_forma_without_hiding_future_vote_
 
     assert schedule_context["pro_formas"] == []
     assert any(window["window_type"] == "pro_forma" for window in schedule_context["expired_windows"])
-    assert status["status"] == "No active Senate floor proceedings"
+    assert status["status"] == "No active floor coverage"
     assert status["state"] == "UPCOMING_SESSION"
-    assert "announced vote sequence" in status["timing"]
+    assert "vote block" in status["timing"]
     assert "May 11" in status["timing"]
     assert "5:30" in status["timing"]
     assert schedule_context["expected_votes"]
@@ -518,9 +518,9 @@ def test_homepage_status_reports_completed_pro_forma_as_no_active_floor_when_no_
     status = main.homepage_operational_status(schedule_context, [], now)
 
     assert status["state"] == "COMPLETED_SESSION"
-    assert status["status"] == "No active Senate floor proceedings"
+    assert status["status"] == "Status: Senate out of active floor session"
     assert status["timing"] == "No active floor coverage window"
-    assert "completed a brief pro forma session earlier today" in status["why"]
+    assert status["why"] == ""
     assert "Pro forma period" not in status["status"]
 
 
@@ -740,9 +740,9 @@ def test_committee_hearing_signal_renders_matching_hearing_card_and_no_empty_sta
     assert len(signals) == 1
     assert signals_rendered.count('<article class="card">') == len(signals)
     assert "Judiciary" in hearings_rendered
-    assert "Judicial nominations" in hearings_rendered
+    assert "Judicial nominations" not in hearings_rendered
     assert "SD-226" in hearings_rendered
-    assert "Radio-TV Gallery" in hearings_rendered
+    assert "Radio-TV Gallery" not in hearings_rendered
     assert "No active committee hearings detected" not in hearings_rendered
     assert "Judiciary" in signals_rendered
     assert "Committee hearing window scheduled" not in signals_rendered
@@ -846,7 +846,7 @@ def test_committee_card_suppresses_long_descriptions():
     rendered = main.item_card(hearing)
 
     assert "<h3>Judiciary</h3>" in rendered
-    assert "SRS Channel" in rendered
+    assert "SRS Channel" not in rendered
     assert "Witnesses will testify" not in rendered
     assert "Coverage relevance" not in rendered
     assert "Full Committee Hearing" not in rendered

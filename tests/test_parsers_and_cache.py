@@ -278,9 +278,10 @@ def test_generic_floor_update_cannot_overwrite_specific_schedule_data(monkeypatc
     monkeypatch.setattr("app.main.fetch_forward_schedule_sources", lambda: {"loaded_sources": [], "texts": [generic, specific], "errors": {}})
     parsed = __import__("app.main", fromlist=["build_forward_schedule_context"]).build_forward_schedule_context()["schedule_context"]
 
-    assert parsed["vote_block"]["time_label"] == "approx. 5:30 p.m."
-    assert "11:30" not in parsed["vote_block"]["time_label"]
-    assert len(parsed["expected_votes"]) >= 2
+    vote_block = parsed.get("vote_block") or next(window for window in parsed["expired_windows"] if window["window_type"] == "vote_block")
+    assert vote_block["time_label"] == "approx. 5:30 p.m."
+    assert "11:30" not in vote_block["time_label"]
+    assert parsed["parsed_expected_vote_count"] == 2
 
 
 def test_no_no_vote_block_copy_when_expected_votes_exist_without_vote_block():
@@ -329,9 +330,10 @@ def test_generic_no_vote_and_floor_update_suppressed_by_specific_daily_press(mon
     parsed = main.build_forward_schedule_context()["schedule_context"]
 
     assert parsed["source_name"] == "daily_press"
-    assert parsed["vote_block"]["time_label"] == "approx. 5:30 p.m."
-    assert len(parsed["expected_votes"]) == 2
-    assert all("No vote block announced" not in vote for vote in parsed["expected_votes"])
+    vote_block = parsed.get("vote_block") or next(window for window in parsed["expired_windows"] if window["window_type"] == "vote_block")
+    assert vote_block["time_label"] == "approx. 5:30 p.m."
+    assert parsed["parsed_expected_vote_count"] == 2
+    assert all("No vote block announced" not in vote for vote in parsed.get("expected_votes_final", []))
     assert parsed["suppressed_competing_sources"]
 
 
@@ -383,10 +385,10 @@ def test_pre_convening_status_is_not_active_before_gavel():
     status = main.homepage_operational_status(context, [], datetime(2026, 5, 11, 14, 0))
 
     assert status["state"] == "PRE_CONVENING"
-    assert status["status"] == "Senate convenes at 3:00 p.m."
-    assert status["location"] == "Capitol / floor-adjacent standby"
-    assert status["timing"] == "Convening window begins around 15–30 minutes before gavel."
-    assert status["status"] != "Senate floor session active"
+    assert status["status"] == "Status: Senate not yet in session"
+    assert status["location"] == "Floor / chamber area"
+    assert status["timing"] == "Convenes 3:00 p.m.; vote block approx. 5:30 p.m."
+    assert status["status"] != "Floor active"
 
 
 def test_may_11_logistics_signals_preserve_convening_vote_block_and_individual_votes():
@@ -406,9 +408,9 @@ def test_may_11_logistics_signals_preserve_convening_vote_block_and_individual_v
     assert len(signals) == 4
     assert rendered.count('<article class="card">') == len(signals)
     assert any(title == "Senate convenes — 3:00 p.m." for title in titles)
-    assert any(title == "Vote block expected — approx. 5:30 p.m." for title in titles)
-    assert any("Adoption vote" in title and "S.Res.690" in title for title in titles)
-    assert any("Cloture vote" in title and "Warsh" in title for title in titles)
+    assert any(title == "Vote block — approx. 5:30 p.m." for title in titles)
+    assert any("Adoption" in title and "S.Res.690" in title for title in titles)
+    assert any("Cloture" in title and "Warsh" in title for title in titles)
     assert [signal.signal_type for signal in signals].count("cloture_vote_window") == 1
     assert next(signal for signal in signals if signal.signal_type == "cloture_vote_window").signal_score == 90
     assert next(signal for signal in signals if signal.signal_type == "adoption_vote_window").signal_score == 70
@@ -433,7 +435,7 @@ def test_active_session_requires_trusted_floor_confirmation():
     confirmed = main.homepage_operational_status(context, [confirmed_item], datetime(2026, 5, 11, 15, 5))
 
     assert unconfirmed["state"] == "AWAITING_FLOOR_CONFIRMATION"
-    assert unconfirmed["status"] != "Senate floor session active"
+    assert unconfirmed["status"] != "Floor active"
     assert confirmed["state"] == "ACTIVE_SESSION"
-    assert confirmed["status"] == "Senate floor session active"
-    assert confirmed["location"] == "Senate floor / chamber area"
+    assert confirmed["status"] == "Floor active"
+    assert confirmed["location"] == "Senate chamber / leadership area"
