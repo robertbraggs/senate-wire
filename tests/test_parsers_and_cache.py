@@ -117,3 +117,76 @@ def test_schedule_window_state_transitions_from_upcoming_to_active_to_expired():
     assert active["next_convening"]["timing_state"] == "ACTIVE"
     assert expired["next_convening"] == {}
     assert expired["expired_windows"][0]["timing_state"] == "EXPIRED"
+
+
+def test_radio_tv_hearing_source_creates_committee_item(monkeypatch):
+    html = """
+    <html><body>
+    Event Date: May 11, 2026 Event Time: 10:00 a.m. Location: SD-226
+    Title: Judiciary Committee Hearing Description: Hearing on judicial nominations. Chamber: Senate
+    </body></html>
+    """
+
+    def fake_fetch(url, timeout=15):
+        assert "radiotv.senate.gov" in url
+        return html
+
+    monkeypatch.setattr("app.main.fetch_url", fake_fetch)
+    items = __import__("app.main", fromlist=["fetch_radio_tv_gallery_items"]).fetch_radio_tv_gallery_items()
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.category == "Committee Meetings & Hearings"
+    assert item.source == "Radio-TV Gallery"
+    assert item.location == "SD-226"
+    assert item.time_label == "10:00 a.m."
+    assert "Judiciary" in (item.committee or item.title)
+
+
+def test_known_expected_vote_block_is_preserved_from_expected_vote_list():
+    sample = """
+    The Senate will next convene at 3:00 p.m. on Monday, May 11, 2026.
+    At approximately 5:30 p.m., 2 roll call votes expected.
+    Expected votes:
+    1. Adoption of Executive Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
+    2. Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination.
+    Floor Update: Senators continued routine business.
+    """
+
+    parsed = parse_forward_floor_schedule(sample, today=date(2026, 5, 6))
+
+    assert parsed["vote_block"]["time_label"] == "approx. 5:30 p.m."
+    assert len(parsed["expected_votes"]) >= 2
+    assert any("S.Res.690" in vote for vote in parsed["expected_votes"])
+    assert any("Warsh" in vote for vote in parsed["expected_votes"])
+
+
+def test_generic_floor_update_cannot_overwrite_specific_schedule_data(monkeypatch):
+    specific = {
+        "key": "senate_dems_schedule",
+        "url": "fixture://specific",
+        "text": "The Senate will next convene at 3:00 p.m. on Monday, May 11, 2026. At approximately 5:30 p.m., 2 roll call votes expected. Adoption of Executive Calendar #5, S.Res.690. Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination.",
+    }
+    generic = {
+        "key": "radio_tv",
+        "url": "fixture://generic",
+        "text": "Floor Update. Routine floor update at 11:30 a.m. Monitor source before moving.",
+    }
+
+    monkeypatch.setattr("app.main.fetch_forward_schedule_sources", lambda: {"loaded_sources": [], "texts": [generic, specific], "errors": {}})
+    parsed = __import__("app.main", fromlist=["build_forward_schedule_context"]).build_forward_schedule_context()["schedule_context"]
+
+    assert parsed["vote_block"]["time_label"] == "approx. 5:30 p.m."
+    assert "11:30" not in parsed["vote_block"]["time_label"]
+    assert len(parsed["expected_votes"]) >= 2
+
+
+def test_no_no_vote_block_copy_when_expected_votes_exist_without_vote_block():
+    rendered = __import__("app.main", fromlist=["render_next_expected_floor_action"]).render_next_expected_floor_action(
+        None,
+        {"schedule_context": {"expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."]}},
+    )
+
+    assert "Motion to invoke cloture" in rendered
+    assert "No vote block announced" not in rendered
+    assert "timing pending" in rendered
