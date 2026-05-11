@@ -1178,7 +1178,7 @@ def infer_location(text: str) -> Optional[str]:
     patterns = [
         r"\bS-325\b",
         r"\bS-316\b",
-        r"\b(?:SD|SH|SR)-?\s?\d+[A-Z]?\b",
+        r"\b(?:SD|SH|SR)-?\s?[A-Z]?\d+[A-Z]?\b",
         r"\bS-\d+[A-Z]?\b",
         r"\bDirksen\s+\d+[A-Z]?\b",
         r"\bHart\s+\d+[A-Z]?\b",
@@ -1506,7 +1506,7 @@ def compute_press_availability(item: JoltItem) -> tuple[str, str]:
 
 
 def normalize_ebb_location_text(text: str) -> str:
-    text = re.sub(r"\b(SD|SH|SR)\s*(\d+[A-Z]?)\b", r"\1-\2", text, flags=re.I)
+    text = re.sub(r"\b(SD|SH|SR)\s*([A-Z]?\d+[A-Z]?)\b", r"\1-\2", text, flags=re.I)
     return clean(text)
 
 def apply_past_status(item: JoltItem) -> JoltItem:
@@ -2169,11 +2169,77 @@ def has_reliable_committee_context(raw: str, structured: Dict[str, str], committ
     generic_title = title_text.lower() in GENERIC_COMMITTEE_TITLES
     if not committee or not has_event_word:
         return False
-    if generic_title and not topic_text:
+    if generic_title and not topic_text and not (parse_time(combined) or infer_location(combined)):
         return False
     if parse_time(combined) and not (has_event_word and committee):
         return False
-    return bool(topic_text and topic_text.lower() not in GENERIC_COMMITTEE_TITLES)
+    if topic_text and topic_text.lower() not in GENERIC_COMMITTEE_TITLES:
+        return True
+    return bool(committee and has_event_word and (parse_time(combined) or infer_location(combined)))
+
+
+def concise_committee_name(name: Optional[str]) -> str:
+    value = clean(name or "")
+    value = re.sub(r"^Senate\s+", "", value, flags=re.I)
+    value = re.sub(r"^Committee\s+on\s+", "", value, flags=re.I)
+    value = re.sub(r"\s+Committee$", "", value, flags=re.I)
+    return clean(value)
+
+
+def _concise_committee_topic(value: Optional[str]) -> str:
+    text = clean(value or "")
+    if not text or text.lower() in GENERIC_COMMITTEE_TITLES:
+        return ""
+    if len(text) > 90 or text.count(".") > 1:
+        return ""
+    if re.search(r"\b(?:description|witness(?:es)?|testimony|statement|purpose|the committee will)\b", text, flags=re.I):
+        return ""
+    return text
+
+
+def split_radio_tv_committee_events(text: str) -> List[str]:
+    text = clean(text)
+    matches = list(re.finditer(r"\b\d{1,2}(?::\d{2})?\s*(?:AM|PM|a\.?m\.?|p\.?m\.?)\b", text, flags=re.I))
+    events = []
+    for idx, match in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        chunk = clean(text[match.start():end])
+        if infer_ebb_committee(chunk) and any(word in chunk.lower() for word in ["hearing", "markup", "business meeting"]):
+            events.append(shorten(chunk, 800))
+    return events
+
+
+def parse_radio_tv_committee_logistics(raw: str) -> Dict[str, str]:
+    """Extract press-logistics fields from Radio-TV Gallery committee text."""
+    text = normalize_ebb_location_text(raw or "")
+    committee = infer_ebb_committee(text) or ""
+    room = extract_ebb_room(text) or infer_location(text) or ""
+
+    coverage = ""
+    m = re.search(
+        r"\bCoverage\s*:\s*(.+?)(?=(?:\b\d{1,2}(?::\d{2})?\s*(?:AM|PM|a\.?m\.?|p\.?m\.?)\b)|(?:\b(?:Senate\s+)?(?:Committee|Subcommittee)\b)|$)",
+        text,
+        flags=re.I,
+    )
+    if m:
+        coverage = clean(m.group(1).strip(" .;:-"))
+    elif re.search(r"\bSRS\b", text):
+        coverage = "SRS Channel"
+
+    access = ""
+    if re.search(r"\bclosed\s+hearing\b|\bhearing\s+closed\b", text, flags=re.I):
+        access = "Closed hearing"
+    elif re.search(r"\bopen\s+hearing\b|\bhearing\s+open\b", text, flags=re.I):
+        access = "Open hearing"
+    if access and access.lower() not in coverage.lower():
+        coverage = " · ".join(x for x in [coverage, access] if x)
+
+    topic = ""
+    topic_match = re.search(r"\bhearing\s+on\s+(.+?)(?=\bCoverage\s*:|\b(?:SD|SH|SR)-?\s?\d|\bS-\d|$)", text, flags=re.I)
+    if topic_match:
+        topic = _concise_committee_topic(topic_match.group(1).strip(" .;:-"))
+
+    return {"committee": committee, "room": room, "coverage": coverage, "topic": topic}
 
 
 def has_reliable_media_context(raw: str, structured: Dict[str, str]) -> bool:
@@ -2197,9 +2263,12 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
 
     remove_noise(soup)
     text = clean(soup.get_text(" "))
-    raw_events = split_ebb_events(text)
+    raw_events = split_radio_tv_committee_events(text)
+    radio_committee_events = bool(raw_events)
+    if not raw_events:
+        raw_events = split_ebb_events(text)
     full_structured = parse_ebb_structured_fields(text)
-    if full_structured.get("title") and (full_structured.get("location") or infer_location(text)):
+    if not radio_committee_events and full_structured.get("title") and (full_structured.get("location") or infer_location(text)):
         raw_events = [text]
     if not raw_events:
         SOURCE_STATUS["radio_tv"] = "loaded: no event-like items parsed"
@@ -2218,9 +2287,11 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
             continue
 
         senators = detect_senators(raw)
-        committee = infer_ebb_committee(raw)
-        topic = extract_topic(raw) or clean(structured.get("description") or structured.get("title") or "")
-        has_committee_signal = c["category"] == "Committee Meetings & Hearings" and has_reliable_committee_context(raw, structured, committee, topic)
+        logistics = parse_radio_tv_committee_logistics(raw)
+        committee = logistics.get("committee") or infer_ebb_committee(raw)
+        topic = logistics.get("topic") or _concise_committee_topic(extract_topic(raw)) or _concise_committee_topic(structured.get("description") or structured.get("title") or "")
+        room = logistics.get("room") or (None if c["location"] == "Location not parsed" else c["location"])
+        has_committee_signal = c["category"] == "Committee Meetings & Hearings" and has_reliable_committee_context(raw, structured, committee, topic or "hearing")
         has_media_signal = has_reliable_media_context(raw, structured)
         if not (has_committee_signal or has_media_signal):
             continue
@@ -2231,8 +2302,8 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
         parse_reason = "committee context with event topic" if has_committee_signal else "media event context with logistics fields"
         title = c["title"] if c["title"].lower() not in GENERIC_COMMITTEE_TITLES else ""
         if has_committee_signal:
-            title = f"{committee}: {topic}" if topic and topic.lower() not in committee.lower() else f"{committee} committee event"
-            confidence = "high" if (d and t and c.get("location") != "Location not parsed") else "medium"
+            title = concise_committee_name(committee) or committee or "Committee hearing"
+            confidence = "high" if (t and room) else "medium"
 
         item = JoltItem(
             source="Radio-TV Gallery",
@@ -2246,15 +2317,15 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
             status=c["status"],
             confidence=confidence,
             quality=parse_reason,
-            location=None if c["location"] == "Location not parsed" else c["location"],
-            coverage_location=None if c["location"] == "Location not parsed" else c["location"],
-            building=c["building"],
+            location=room,
+            coverage_location=room,
+            building=infer_building(room),
             measure=None,
             takeaway=topic or c["takeaway"],
             where_to_be=c["where_to_be"],
             movement_cue=c["movement_cue"],
             who_to_watch=committee or c["who_to_watch"],
-            coverage_note=c["coverage_note"],
+            coverage_note=logistics.get("coverage") or c["coverage_note"],
             staff_note="Use Radio-TV Gallery listing to reconcile committee/media logistics.",
             gallery_note="Confirm room, camera setup, credential access, and committee direction.",
             senators_detected=senators,
@@ -2265,6 +2336,7 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
             committee=committee,
             url=RADIO_TV_URL,
             topic=topic,
+            access_note=logistics.get("coverage") or "",
             parse_reason=parse_reason,
             section_target="committee" if has_committee_signal else "media_event",
         )
@@ -2343,7 +2415,8 @@ def fetch_committee_meetings_items() -> List[JoltItem]:
 
 def dedupe_items(items: List[JoltItem]) -> List[JoltItem]:
     seen = set()
-    unique = []
+    unique: List[JoltItem] = []
+    committee_index: Dict[tuple, int] = {}
 
     for item in items:
         key = (
@@ -2357,6 +2430,27 @@ def dedupe_items(items: List[JoltItem]) -> List[JoltItem]:
 
         if key in seen:
             continue
+
+        if item.category == "Committee Meetings & Hearings":
+            committee_key = (
+                concise_committee_name(item.committee).lower(),
+                (item.time_label or "").lower(),
+                (item.location or "").lower(),
+            )
+            if all(committee_key):
+                existing_pos = committee_index.get(committee_key)
+                if existing_pos is not None:
+                    existing = unique[existing_pos]
+                    if existing.source == "Radio-TV Gallery":
+                        existing.suppressed_competing_sources = (existing.suppressed_competing_sources or []) + [item.source]
+                        continue
+                    if item.source == "Radio-TV Gallery":
+                        item.suppressed_competing_sources = (item.suppressed_competing_sources or []) + [existing.source]
+                        unique[existing_pos] = item
+                        seen.add(key)
+                        continue
+                    continue
+                committee_index[committee_key] = len(unique)
 
         seen.add(key)
         unique.append(item)
@@ -2484,6 +2578,8 @@ def is_well_formed_committee_item(item: JoltItem) -> bool:
         return False
     if not committee or committee.lower() == "senate committee":
         return False
+    if item.source == "Radio-TV Gallery":
+        return has_time_or_place
     return has_specific_subject and has_time_or_place
 
 def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
@@ -2515,7 +2611,7 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
             continue
         g.setdefault(item.category, []).append(item)
 
-        if item.category not in {"Notes", "Remarks", "Earlier Floor Activity", "Low-Signal Items"}:
+        if item.category not in {"Notes", "Remarks", "Earlier Floor Activity", "Low-Signal Items", "Committee Meetings & Hearings"}:
             g["Coverage Timeline"].append(item)
 
     return g
@@ -3304,30 +3400,31 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         links.append(f"<a class='source' href='{html.escape(item.url)}' target='_blank'>{'Open Congressional Reporters' if item.source == 'Congressional Reporters' else 'Open source'}</a>")
 
     if item.category == "Committee Meetings & Hearings":
-        committee = filter_global_boilerplate(item.committee) or ""
-        topic = filter_global_boilerplate(item.topic) or filter_global_boilerplate(item.takeaway) or ""
+        committee = concise_committee_name(item.committee) or filter_global_boilerplate(item.committee) or "Committee hearing"
+        topic = _concise_committee_topic(item.topic)
         location = filter_global_boilerplate(item.location) or ""
         source_label = item.source or "Committee schedule"
-        coverage_relevance = filter_global_boilerplate(item.public_value) or filter_global_boilerplate(item.coverage_note) or "Committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews."
-        if coverage_relevance == "A recorded vote creates a clear public accountability and coverage window.":
-            coverage_relevance = "Committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews."
+        coverage = filter_global_boilerplate(item.access_note) or filter_global_boilerplate(item.coverage_note) or ""
+        generic_coverage = {
+            "official committee listing.",
+            "official senate committee meeting listing.",
+            "use the committee room, timing, and witness/member arrivals to plan coverage.",
+            "committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews.",
+        }
+        if coverage.lower() in generic_coverage or coverage.lower().startswith("official committee eventid"):
+            coverage = ""
         rows = [
-            ("Committee", committee),
-            ("Topic", topic),
-            ("Date", display_date),
             ("Time", item.time_label),
-            ("Room/location", location),
+            ("Room", location),
+            ("Coverage", coverage),
             ("Source", source_label),
-            ("Coverage relevance", coverage_relevance),
+            ("Topic", topic),
         ]
         logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in rows if is_meaningful(v)) + "</div>"
         link = item.url or COMMITTEE_SCHEDULE_URL
-        title = item.title if is_meaningful(item.title) and item.title.lower() not in GENERIC_COMMITTEE_TITLES else ""
-        if not title:
-            title = f"{committee}: {topic}" if committee and topic else committee or topic or "Committee meeting"
         return f"""
         <article class="card">
-            <h3>{html.escape(title)}</h3>
+            <h3>{html.escape(committee)}</h3>
             {logistics}
             <div class='source-links'><a class='source' href='{html.escape(link)}' target='_blank'>Open source</a></div>
         </article>
@@ -4291,23 +4388,17 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             break
         status = "current" if committee_item.status in {"current", "active", "live"} else "upcoming"
         timing = "Current" if status == "current" else "Upcoming"
-        when = " · ".join(x for x in [committee_item.date_label, committee_item.time_label] if is_meaningful(x))
         place = filter_global_boilerplate(committee_item.location)
-        committee = filter_global_boilerplate(committee_item.committee) or "Committee"
-        topic = filter_global_boilerplate(committee_item.topic) or filter_global_boilerplate(committee_item.takeaway) or committee_item.title
-        title = f"{committee}: {topic}" if topic and topic.lower() not in committee.lower() else committee_item.title
-        detail_bits = [title]
-        if when:
-            detail_bits.append(when)
-        if place:
-            detail_bits.append(f"at {place}")
+        committee = concise_committee_name(committee_item.committee) or "Committee"
+        logistics = ", ".join(x for x in [committee_item.time_label, place] if is_meaningful(x))
+        title = f"{committee} hearing" + (f" — {logistics}" if logistics else "")
         signal = make_coverage_signal_item(
-            " — ".join(detail_bits) + ".",
+            title,
             status,
             "committee_hearing_window",
             timing,
-            "Work the room and hallway window around witness and member arrivals.",
-            "Committee hearings can drive issue coverage and hallway interviews away from the floor.",
+            "Use the posted committee room and start time for coverage.",
+            "",
             source=committee_item.source or "Committee schedule",
         )
         signal.location = committee_item.location
