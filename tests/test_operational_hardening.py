@@ -383,8 +383,8 @@ def test_visible_coverage_signal_count_matches_rendered_items():
     assert len(signals) == 2
     assert rendered.count('<article class="card">') == len(signals)
     assert "2 Upcoming Coverage Signals" in rendered
-    assert "Upcoming vote window scheduled for Monday, May 11" in rendered
-    assert "Cloture vote window listed" in rendered
+    assert "Vote block expected — approx. 5:30 p.m." in rendered
+    assert "Cloture vote — Motion to invoke cloture" in rendered
 
 
 def test_coverage_signal_section_hidden_when_no_signals_exist():
@@ -413,7 +413,7 @@ def test_upcoming_signal_label_avoids_current_floor_contradiction():
 
     assert "1 Upcoming Coverage Signal" in rendered_section
     assert "1</b>Upcoming Coverage Signal" in rendered_summary
-    assert "Scheduled floor convening window listed for Monday, May 11" in rendered_section
+    assert "Senate convenes — 3:00 p.m." in rendered_section
     assert "No current Senate floor movement" not in rendered_section + rendered_summary
     assert "No active Senate floor" not in rendered_section + rendered_summary
 
@@ -435,8 +435,8 @@ def test_coverage_signal_reasons_explain_non_floor_signal_count():
     rendered = main.render_signal_summary(reasons, 0)
 
     assert len(reasons) == 2
-    assert "Upcoming vote window scheduled for Monday, May 11" in rendered
-    assert "Cloture vote window listed" in rendered
+    assert "Vote block expected — approx. 5:30 p.m." in rendered
+    assert "Cloture vote — Motion to invoke cloture" in rendered
     assert rendered.count("<li>") == len(reasons)
     assert "No active Senate floor" not in rendered
 
@@ -482,7 +482,7 @@ def test_operational_language_avoids_directive_vote_block_copy():
 
     combined = " ".join(actions) + rendered
     assert "Next major floor coverage window is the announced vote sequence" in " ".join(actions)
-    assert "Coverage focus:" in " ".join(actions)
+    assert "Key votes:" in " ".join(actions)
     assert "Prepare for" not in combined
     assert "pre-position" not in combined
 
@@ -535,8 +535,8 @@ def test_homepage_status_state_machine_active_upcoming_completed_low_activity():
         "pro_formas": [{"date": "2026-05-07", "date_label": "May 7", "time_label": "10:00 a.m."}],
     }, datetime(2026, 5, 7, 11, 0))
 
-    assert main.homepage_operational_status(active, [], datetime(2026, 5, 11, 15, 30))["state"] == "ACTIVE_SESSION"
-    assert main.homepage_operational_status(upcoming, [], datetime(2026, 5, 11, 14, 0))["state"] == "UPCOMING_SESSION"
+    assert main.homepage_operational_status(active, [], datetime(2026, 5, 11, 15, 30))["state"] == "AWAITING_FLOOR_CONFIRMATION"
+    assert main.homepage_operational_status(upcoming, [], datetime(2026, 5, 11, 14, 0))["state"] == "PRE_CONVENING"
     assert main.homepage_operational_status(completed, [], datetime(2026, 5, 7, 11, 0))["state"] == "COMPLETED_SESSION"
     assert main.homepage_operational_status({}, [], datetime(2026, 5, 7, 13, 0))["state"] == "LOW_ACTIVITY_PERIOD"
 
