@@ -214,6 +214,8 @@ class JoltItem:
     official_context: Dict[str, Any] = None
     links: List[Dict[str, str]] = None
     procedure_interpretation: Optional[Dict[str, Any]] = None
+    parse_reason: str = ""
+    section_target: str = ""
 
 
 @dataclass(kw_only=True)
@@ -2124,6 +2126,47 @@ def fetch_ebb_items() -> List[JoltItem]:
 
 
 
+GENERIC_COMMITTEE_TITLES = {"hearing", "committee hearing", "committee meeting", "business meeting", "markup", "ebb event", "radio-tv gallery listing"}
+
+
+def infer_section_target(item: JoltItem) -> str:
+    if item.suppressed or item.confidence == "low":
+        return "suppressed"
+    if item.category == "Committee Meetings & Hearings":
+        return "committee"
+    if item.category in {"Votes", "Floor Action", "Schedule", "Remarks"}:
+        return "floor"
+    if item.category == "Events":
+        return "media_event"
+    return "link_only" if item.url else "suppressed"
+
+
+def has_reliable_committee_context(raw: str, structured: Dict[str, str], committee: Optional[str], topic: Optional[str]) -> bool:
+    """Require committee context before turning Radio-TV text into a hearing card."""
+    combined = clean(" ".join([
+        raw or "",
+        structured.get("title") or "",
+        structured.get("description") or "",
+    ]))
+    lower = combined.lower()
+    has_event_word = any(word in lower for word in ["hearing", "markup", "business meeting", "committee meeting", "oversight", "nomination"])
+    topic_text = clean(topic or structured.get("description") or structured.get("title") or "")
+    title_text = clean(structured.get("title") or infer_ebb_title(raw) or "")
+    generic_title = title_text.lower() in GENERIC_COMMITTEE_TITLES
+    if not committee or not has_event_word:
+        return False
+    if generic_title and not topic_text:
+        return False
+    if parse_time(combined) and not (has_event_word and committee):
+        return False
+    return bool(topic_text and topic_text.lower() not in GENERIC_COMMITTEE_TITLES)
+
+
+def has_reliable_media_context(raw: str, structured: Dict[str, str]) -> bool:
+    lower = clean(" ".join([raw or "", structured.get("title") or "", structured.get("description") or ""])).lower()
+    return any(k in lower for k in ["stakeout", "press conference", "media availability", "briefing", "camera spray", "photo spray"])
+
+
 def fetch_radio_tv_gallery_items() -> List[JoltItem]:
     """Parse Radio-TV Gallery public listings into structured logistics items.
 
@@ -2159,51 +2202,63 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
             continue
         if not is_joint_or_senate_relevant_ebb(structured, raw):
             continue
-        has_committee_signal = c["category"] == "Committee Meetings & Hearings"
-        has_media_signal = any(k in clean(f"{c['title']} {raw}").lower() for k in ["stakeout", "press conference", "media availability", "briefing", "camera spray", "photo spray"])
-        if not (has_committee_signal or has_media_signal):
-            continue
-        if not (d or t or c.get("location") != "Location not parsed" or has_committee_signal):
-            continue
 
         senators = detect_senators(raw)
         committee = infer_ebb_committee(raw)
-        topic = extract_topic(raw) or clean(structured.get("description") or structured.get("title") or raw)
+        topic = extract_topic(raw) or clean(structured.get("description") or structured.get("title") or "")
+        has_committee_signal = c["category"] == "Committee Meetings & Hearings" and has_reliable_committee_context(raw, structured, committee, topic)
+        has_media_signal = has_reliable_media_context(raw, structured)
+        if not (has_committee_signal or has_media_signal):
+            continue
+        if has_media_signal and not (d or t or c.get("location") != "Location not parsed"):
+            continue
+
+        confidence = c["confidence"]
+        parse_reason = "committee context with event topic" if has_committee_signal else "media event context with logistics fields"
+        title = c["title"] if c["title"].lower() not in GENERIC_COMMITTEE_TITLES else ""
+        if has_committee_signal:
+            title = f"{committee}: {topic}" if topic and topic.lower() not in committee.lower() else f"{committee} committee event"
+            confidence = "high" if (d and t and c.get("location") != "Location not parsed") else "medium"
+
         item = JoltItem(
             source="Radio-TV Gallery",
             raw=shorten(raw, 700),
             date_label=fmt_date(d),
             time_label=fmt_time(t),
             sort_datetime=sort_dt(d, t),
-            category=c["category"],
-            title=c["title"] if c["title"] != "EBB Event" else (topic[:90] if topic else "Radio-TV Gallery listing"),
+            category="Committee Meetings & Hearings" if has_committee_signal else c["category"],
+            title=title or (topic[:90] if topic else "Radio-TV Gallery event"),
             urgency=c["urgency"],
             status=c["status"],
-            confidence=c["confidence"],
-            quality="Radio-TV Gallery public listing",
-            location=c["location"],
-            coverage_location=c["location"],
+            confidence=confidence,
+            quality=parse_reason,
+            location=None if c["location"] == "Location not parsed" else c["location"],
+            coverage_location=None if c["location"] == "Location not parsed" else c["location"],
             building=c["building"],
             measure=None,
             takeaway=topic or c["takeaway"],
             where_to_be=c["where_to_be"],
             movement_cue=c["movement_cue"],
-            who_to_watch=c["who_to_watch"],
+            who_to_watch=committee or c["who_to_watch"],
             coverage_note=c["coverage_note"],
             staff_note="Use Radio-TV Gallery listing to reconcile committee/media logistics.",
             gallery_note="Confirm room, camera setup, credential access, and committee direction.",
             senators_detected=senators,
-            coverage_target=infer_coverage_target(raw, senators, committee, None),
+            coverage_target="committee" if has_committee_signal else infer_coverage_target(raw, senators, committee, None),
             press_availability="Medium",
             best_window="committee room / public access areas" if has_committee_signal else "scheduled event location",
             event_type=c.get("event_type"),
             committee=committee,
             url=RADIO_TV_URL,
             topic=topic,
+            parse_reason=parse_reason,
+            section_target="committee" if has_committee_signal else "media_event",
         )
         item.coverage_target = classify_coverage_target(item)
+        item.section_target = infer_section_target(item)
         item.procedure_interpretation = classify_event_text(raw)
-        items.append(apply_past_status(item))
+        if item.confidence in {"medium", "high"}:
+            items.append(apply_past_status(item))
 
     return dedupe_items(items)[:30]
 
@@ -2232,7 +2287,7 @@ def fetch_committee_meetings_items() -> List[JoltItem]:
             t = parse_time(str(at)) if at else None
             title = clean(m.get("title") or m.get("description") or "Committee Meeting")
             committee = clean((m.get("committee") or {}).get("name") if isinstance(m.get("committee"), dict) else m.get("committeeName") or "Senate Committee")
-            loc = clean(m.get("location") or m.get("room") or "Room TBD")
+            loc = clean(m.get("location") or m.get("room") or "")
             event_id = str(m.get("eventId") or "")
             is_press = any(k in title.lower() for k in ["press conference", "stakeout"])
             out.append(JoltItem(
@@ -2336,6 +2391,10 @@ def get_all_items() -> List[JoltItem]:
         else:
             item.action_line = clean(item.movement_cue) or "Monitor for new floor activity, EBB postings, and committee schedule updates."
         enrich_public_fields(item)
+        if not item.parse_reason:
+            item.parse_reason = item.quality or "parsed source item"
+        if not item.section_target:
+            item.section_target = infer_section_target(item)
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
     return items
@@ -2400,13 +2459,15 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
     }
 
     for item in items:
+        if item.suppressed or item.confidence == "low" or item.section_target == "suppressed":
+            continue
         if item.category == "Notes":
             raw = f"{item.title} {item.raw}".lower()
             procedural_terms = ["cloture filed","cloture invoked","motion to proceed","unanimous consent","objected","passage","confirmed","quorum","recess","adjourn","executive session"]
             if not any(t in raw for t in procedural_terms):
-                item.category = "Low-Signal Items"
+                continue
         if item.category == "Remarks" and not (item.senators_detected or is_meaningful(item.topic)):
-            item.category = "Low-Signal Items"
+            continue
         g.setdefault(item.category, []).append(item)
 
         if item.category not in {"Notes", "Remarks", "Earlier Floor Activity", "Low-Signal Items"}:
@@ -2634,15 +2695,16 @@ def enrich_public_fields(item: JoltItem) -> None:
         item.visibility_level = "Medium"
     else:
         item.visibility_level = "Low"
-    if "recorded vote" in raw or "roll call" in raw:
+    if item.category == "Committee Meetings & Hearings":
+        item.public_value = item.takeaway or item.coverage_note or "Committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews."
+        item.legislative_context = "A Senate committee is holding a scheduled meeting or hearing."
+    elif "recorded vote" in raw or "roll call" in raw:
         item.public_value = "A recorded vote creates a clear public accountability and coverage window."
     elif "voice vote" in raw:
         item.public_value = "The Senate acted without a recorded vote; this may be lower visibility unless the matter is high-profile."
     else:
         item.public_value = item.takeaway
-    if item.category == "Committee Meetings & Hearings":
-        item.legislative_context = "A Senate committee is holding a scheduled meeting or hearing."
-    else:
+    if item.category != "Committee Meetings & Hearings":
         item.legislative_context = "The Senate is considering current floor business and related procedural actions."
     if "motion to invoke cloture" in raw:
         item.procedure_stage, item.outcome_stage, item.vote_status = "cloture vote", "procedural", "scheduled"
@@ -3175,25 +3237,30 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         links.append(f"<a class='source' href='{html.escape(item.url)}' target='_blank'>{'Open Congressional Reporters' if item.source == 'Congressional Reporters' else 'Open source'}</a>")
 
     if item.category == "Committee Meetings & Hearings":
-        committee = filter_global_boilerplate(item.committee) or "Senate committee"
-        topic = filter_global_boilerplate(item.topic) or filter_global_boilerplate(item.takeaway) or filter_global_boilerplate(item.raw)
-        location = filter_global_boilerplate(item.location) or "Room/location TBD"
+        committee = filter_global_boilerplate(item.committee) or ""
+        topic = filter_global_boilerplate(item.topic) or filter_global_boilerplate(item.takeaway) or ""
+        location = filter_global_boilerplate(item.location) or ""
         source_label = item.source or "Committee schedule"
         coverage_relevance = filter_global_boilerplate(item.public_value) or filter_global_boilerplate(item.coverage_note) or "Committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews."
+        if coverage_relevance == "A recorded vote creates a clear public accountability and coverage window.":
+            coverage_relevance = "Committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews."
         rows = [
             ("Committee", committee),
-            ("Topic", topic or item.title or "Hearing details pending"),
-            ("Date", display_date or "Date TBD"),
-            ("Time", item.time_label or "Time TBD"),
+            ("Topic", topic),
+            ("Date", display_date),
+            ("Time", item.time_label),
             ("Room/location", location),
             ("Source", source_label),
             ("Coverage relevance", coverage_relevance),
         ]
         logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in rows if is_meaningful(v)) + "</div>"
         link = item.url or COMMITTEE_SCHEDULE_URL
+        title = item.title if is_meaningful(item.title) and item.title.lower() not in GENERIC_COMMITTEE_TITLES else ""
+        if not title:
+            title = f"{committee}: {topic}" if committee and topic else committee or topic or "Committee meeting"
         return f"""
         <article class="card">
-            <h3>{html.escape(item.title if is_meaningful(item.title) else 'Committee hearing')}</h3>
+            <h3>{html.escape(title)}</h3>
             {logistics}
             <div class='source-links'><a class='source' href='{html.escape(link)}' target='_blank'>Open source</a></div>
         </article>
@@ -3861,6 +3928,8 @@ def build_alert_signals(items: List[JoltItem], forward_context: Dict[str, Any], 
     convene_minutes = _minutes_until(convene_dt, now)
     if convene_dt and convene_minutes is not None and 0 <= convene_minutes <= 60:
         alerts.append({"title": f"Senate convenes at {convene_label}", "body": "Convening is inside the next hour.", "urgency": "medium", "coverage_type": "senate_convening_within_60"})
+    elif convene_dt and convene_minutes is not None and convene_minutes > 60 and convene_dt.date() == now.date():
+        alerts.append({"title": f"Senate convenes later today at {convene_label}", "body": "Convening is more than an hour away.", "urgency": "low", "coverage_type": "senate_convening_later_today"})
 
     for item in items:
         text = f"{item.title} {item.raw} {item.action_line}".lower()
@@ -4041,19 +4110,28 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
 
-    committee_items = groups.get("Committee Meetings & Hearings", [])
+    committee_items = [
+        item for item in groups.get("Committee Meetings & Hearings", [])
+        if item.confidence in {"medium", "high"}
+        and (filter_global_boilerplate(item.committee) or filter_global_boilerplate(item.topic))
+    ]
     for committee_item in committee_items:
         if len(signals) >= 5:
             break
         status = "current" if committee_item.status in {"current", "active", "live"} else "upcoming"
         timing = "Current" if status == "current" else "Upcoming"
-        when = " · ".join(x for x in [committee_item.date_label, committee_item.time_label] if is_meaningful(x)) or "time pending"
-        place = filter_global_boilerplate(committee_item.location) or "room/location pending"
-        committee = filter_global_boilerplate(committee_item.committee) or "Senate committee"
+        when = " · ".join(x for x in [committee_item.date_label, committee_item.time_label] if is_meaningful(x))
+        place = filter_global_boilerplate(committee_item.location)
+        committee = filter_global_boilerplate(committee_item.committee) or "Committee"
         topic = filter_global_boilerplate(committee_item.topic) or filter_global_boilerplate(committee_item.takeaway) or committee_item.title
         title = f"{committee}: {topic}" if topic and topic.lower() not in committee.lower() else committee_item.title
+        detail_bits = [title]
+        if when:
+            detail_bits.append(when)
+        if place:
+            detail_bits.append(f"at {place}")
         signal = make_coverage_signal_item(
-            f"{title} — {when} at {place}.",
+            " — ".join(detail_bits) + ".",
             status,
             "committee_hearing_window",
             timing,
@@ -4070,6 +4148,9 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
         signal.topic = committee_item.topic
         signal.url = committee_item.url
         signal.who_to_watch = committee
+        signal.raw = f"Committee signal linked to visible committee item: {committee_item.title}"
+        signal.parse_reason = "derived from visible committee card"
+        signal.section_target = "committee"
         signals.append(signal)
 
     floor_items = groups.get("Floor Action", []) + groups.get("Schedule", [])

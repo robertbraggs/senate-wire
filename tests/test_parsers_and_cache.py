@@ -5,6 +5,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from app import main
 from app.main import (
     classify_floor,
     parse_forward_floor_schedule,
@@ -141,6 +142,107 @@ def test_radio_tv_hearing_source_creates_committee_item(monkeypatch):
     assert item.location == "SD-226"
     assert item.time_label == "10:00 a.m."
     assert "Judiciary" in (item.committee or item.title)
+
+
+def test_radio_tv_isolated_time_does_not_create_hearing(monkeypatch):
+    html = """
+    <html><body>
+    Other than pro formas on Monday, May 4 at 6:45 a.m. the Senate will next convene later.
+    Senate Radio-TV Gallery office information and archive links. Location: S-325.
+    </body></html>
+    """
+
+    monkeypatch.setattr("app.main.fetch_url", lambda url, timeout=15: html)
+
+    assert main.fetch_radio_tv_gallery_items() == []
+
+
+def test_radio_tv_committee_listing_has_structured_committee_card(monkeypatch):
+    html = """
+    <html><body>
+    Event Date: May 12, 2026 Event Time: 2:30 p.m. Location: SD-106
+    Title: Senate Committee on Foreign Relations Hearing
+    Description: Hearing on nomination of ambassadors. Chamber: Senate
+    </body></html>
+    """
+
+    monkeypatch.setattr("app.main.fetch_url", lambda url, timeout=15: html)
+    items = main.fetch_radio_tv_gallery_items()
+
+    assert len(items) == 1
+    assert items[0].category == "Committee Meetings & Hearings"
+    assert items[0].section_target == "committee"
+    assert "Foreign Relations" in (items[0].committee or items[0].title)
+    assert "nomination of ambassadors" in (items[0].topic or items[0].takeaway)
+
+
+def test_committee_signal_links_to_committee_not_floor_window():
+    hearing = main.JoltItem(
+        source="Radio-TV Gallery", raw="Judiciary hearing on nominations", date_label="May 11", time_label="10:00 a.m.",
+        sort_datetime="2026-05-11T10:00:00", category="Committee Meetings & Hearings", title="Judiciary: Nominations",
+        urgency="scheduled", status="confirmed", confidence="medium", quality="committee context with event topic",
+        location="SD-226", building="Dirksen", measure=None, takeaway="Judicial nominations", where_to_be="SD-226",
+        movement_cue="Arrive before start", who_to_watch="Judiciary", coverage_note="Committee room logistics",
+        staff_note="", gallery_note="", senators_detected=[], coverage_target="committee", press_availability="Medium",
+        best_window="committee room / public access areas", event_type="Hearing", committee="Judiciary", url="https://www.radiotv.senate.gov/", topic="Judicial nominations",
+        section_target="committee",
+    )
+    main.enrich_public_fields(hearing)
+
+    groups = main.grouped([hearing])
+    signals = main.build_coverage_signal_items(groups, {}, datetime(2026, 5, 11, 9, 0))
+
+    assert groups["Committee Meetings & Hearings"] == [hearing]
+    assert not groups["Floor Action"]
+    assert len(signals) == 1
+    assert signals[0].section_target == "committee"
+    assert signals[0].url == hearing.url
+
+
+def test_bad_fallback_labels_are_suppressed_from_public_groups():
+    item = main.parse_floor_item("Floor Update: Senators continued routine business.", date(2026, 5, 11))
+
+    groups = main.grouped([item])
+
+    assert item.title == "Floor Update"
+    assert all(item not in values for values in groups.values())
+
+
+def test_convening_countdown_alert_timing():
+    context = {"schedule_context": {"next_convening": {"date": "2026-05-11", "time_label": "3:00 p.m."}}}
+
+    far = main.build_alert_signals([], context, datetime(2026, 5, 11, 10, 22))
+    inside = main.build_alert_signals([], context, datetime(2026, 5, 11, 14, 15))
+    after = main.build_alert_signals([], context, datetime(2026, 5, 11, 15, 5))
+    missing = main.build_alert_signals([], {"schedule_context": {}}, datetime(2026, 5, 11, 10, 22))
+
+    assert far[0]["title"] == "Senate convenes later today at 3:00 p.m."
+    assert far[0]["body"] != "Convening is inside the next hour."
+    assert inside[0]["body"] == "Convening is inside the next hour."
+    assert after == []
+    assert missing == []
+
+
+def test_signal_count_matches_visible_valid_signals_only():
+    valid = main.JoltItem(
+        source="Congress.gov API", raw="HELP hearing on health policy", date_label="May 11", time_label="10:00 a.m.",
+        sort_datetime="2026-05-11T10:00:00", category="Committee Meetings & Hearings", title="HELP: Health policy",
+        urgency="scheduled", status="confirmed", confidence="high", quality="official", location="SD-430", building="Dirksen",
+        measure=None, takeaway="Health policy oversight", where_to_be="SD-430", movement_cue="Arrive before start",
+        who_to_watch="HELP", coverage_note="Committee logistics", staff_note="", gallery_note="", senators_detected=[],
+        coverage_target="committee", press_availability="Medium", best_window="committee room / public access areas", event_type="Hearing",
+        committee="HELP", url="https://www.congress.gov/committee-meetings", topic="Health policy oversight", section_target="committee",
+    )
+    weak = main.parse_floor_item("Floor Update: Routine floor update at 11:30 a.m. Monitor source before moving.", date(2026, 5, 11))
+    main.enrich_public_fields(valid)
+
+    groups = main.grouped([valid, weak])
+    signals = main.build_coverage_signal_items(groups, {}, datetime(2026, 5, 11, 9, 0))
+    rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+
+    assert len(signals) == 1
+    assert rendered.count('<article class="card">') == len(signals)
+    assert f"{len(signals)} Upcoming Coverage" in rendered
 
 
 def test_known_expected_vote_block_is_preserved_from_expected_vote_list():
