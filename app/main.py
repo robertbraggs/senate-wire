@@ -3401,24 +3401,10 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
 
     if item.category == "Committee Meetings & Hearings":
         committee = concise_committee_name(item.committee) or filter_global_boilerplate(item.committee) or "Committee hearing"
-        topic = _concise_committee_topic(item.topic)
         location = filter_global_boilerplate(item.location) or ""
-        source_label = item.source or "Committee schedule"
-        coverage = filter_global_boilerplate(item.access_note) or filter_global_boilerplate(item.coverage_note) or ""
-        generic_coverage = {
-            "official committee listing.",
-            "official senate committee meeting listing.",
-            "use the committee room, timing, and witness/member arrivals to plan coverage.",
-            "committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews.",
-        }
-        if coverage.lower() in generic_coverage or coverage.lower().startswith("official committee eventid"):
-            coverage = ""
         rows = [
             ("Time", item.time_label),
             ("Room", location),
-            ("Coverage", coverage),
-            ("Source", source_label),
-            ("Topic", topic),
         ]
         logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in rows if is_meaningful(v)) + "</div>"
         link = item.url or COMMITTEE_SCHEDULE_URL
@@ -3433,11 +3419,9 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     if item.category == "Coverage Signals":
         logistics_rows = []
         if is_meaningful(item.coverage_window):
-            logistics_rows.append(("Current/upcoming", item.coverage_window))
+            logistics_rows.append(("When", item.coverage_window))
         if is_meaningful(item.coverage_action):
             logistics_rows.append(("Move", item.coverage_action))
-        if is_meaningful(item.public_value):
-            logistics_rows.append(("Why it matters", item.public_value))
         logistics = ""
         if logistics_rows:
             logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in logistics_rows) + "</div>"
@@ -3852,37 +3836,43 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
     if confirmed_floor_activity:
         return {
             "state": "ACTIVE_SESSION",
-            "status": "Senate floor session active",
-            "location": "Senate floor / chamber area",
+            "status": "Floor active",
+            "location": "Senate chamber / leadership area",
             "timing": "Floor proceeding underway",
-            "watch": "Leadership, cloakrooms, EBB, floor guidance",
-            "why": "A trusted floor source shows proceedings underway.",
-            "guidance": "Work the chamber area and watch for vote timing or leader movement.",
+            "watch": "Leadership remarks and vote timing",
+            "why": "",
+            "guidance": "",
         }
     if active_vote:
         return {
             "state": "ACTIVE_FLOOR_COVERAGE_WINDOW",
-            "status": "Active floor coverage window",
-            "timing": "Vote window is current; confirm start from roll call and floor sources.",
-            "why": "The announced vote window is current, but floor activity still needs source confirmation.",
+            "status": "Vote window current",
+            "location": "Floor / chamber area",
+            "timing": "Confirm roll call start.",
+            "watch": "Roll call start and leadership movement",
+            "why": "",
+            "guidance": "",
         }
     if active_convening and _same_day_window(active_convening, now):
         label = active_convening.get("time_label") or active_convening.get("time") or "time pending"
         return {
             "state": "AWAITING_FLOOR_CONFIRMATION",
-            "status": f"Awaiting floor confirmation after {label}",
-            "location": "Capitol / floor-adjacent standby",
-            "timing": "Scheduled convening time has passed; no trusted floor start confirmation yet.",
-            "watch": "Leadership, cloakrooms, EBB, floor guidance",
-            "why": "A convening time alone does not prove the Senate is in active session.",
-            "guidance": "Stay floor-adjacent, but wait for a trusted floor signal before calling the session active.",
+            "status": "Status: Awaiting floor convening",
+            "location": "Floor / chamber area",
+            "timing": f"Gavel was scheduled for {label}; wait for floor confirmation.",
+            "watch": "Leadership remarks and vote timing",
+            "why": "",
+            "guidance": "",
         }
     if active_pro_forma:
         return {
             "state": "ACTIVE_SESSION",
-            "status": "Brief pro forma session window",
-            "timing": "No active floor coverage window",
-            "why": "A brief pro forma window is current, with no vote coverage window announced.",
+            "status": "Floor active",
+            "location": "Senate chamber / leadership area",
+            "timing": "Brief pro forma session window",
+            "watch": "Adjournment and next convening",
+            "why": "",
+            "guidance": "",
         }
     if upcoming_vote:
         vote_date = upcoming_vote.get("date_label") or "the next floor day"
@@ -3891,18 +3881,21 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
             convene_time = upcoming_convening.get("time_label") or "time pending"
             return {
                 "state": "PRE_CONVENING",
-                "status": f"Senate convenes at {convene_time}",
-                "location": "Capitol / floor-adjacent standby",
-                "timing": "Convening window begins around 15–30 minutes before gavel.",
-                "watch": "Leadership, cloakrooms, EBB, floor guidance",
-                "why": "Convening is the day's first floor checkpoint and can reshape afternoon logistics.",
-                "guidance": "Stay mobile. No need to post at the floor yet; watch for changes to vote timing or floor activity.",
+                "status": "Status: Senate not yet in session",
+                "location": "Floor / chamber area",
+                "timing": f"Convenes {convene_time}; vote block {vote_time.rstrip('.')}.",
+                "watch": "Leadership remarks and vote timing",
+                "why": "",
+                "guidance": "",
             }
         return {
             "state": "UPCOMING_SESSION",
-            "status": "No active Senate floor proceedings",
-            "timing": f"Next major floor coverage window is the announced vote sequence on {vote_date} at {vote_time}.",
-            "why": "No active floor proceedings now; the next operationally relevant floor window remains scheduled.",
+            "status": "No active floor coverage",
+            "location": "Floor / chamber area",
+            "timing": f"Next: vote block {vote_date} at {vote_time}.",
+            "watch": "Scheduled votes",
+            "why": "",
+            "guidance": "",
         }
     if upcoming_convening or expected_votes:
         convene_date = upcoming_convening.get("date_label") or "the next floor day"
@@ -3910,31 +3903,40 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
         if upcoming_convening and _same_day_window(upcoming_convening, now):
             return {
                 "state": "PRE_CONVENING",
-                "status": f"Senate convenes at {convene_time}",
-                "location": "Capitol / floor-adjacent standby",
-                "timing": "Convening window begins around 15–30 minutes before gavel.",
-                "watch": "Leadership, cloakrooms, EBB, floor guidance",
-                "why": "Convening is the day's first floor checkpoint and can reshape afternoon logistics.",
-                "guidance": "Stay mobile. No need to post at the floor yet; watch for changes to vote timing or floor activity.",
+                "status": "Status: Senate not yet in session",
+                "location": "Floor / chamber area",
+                "timing": f"Convenes {convene_time}.",
+                "watch": "Leadership remarks and vote timing",
+                "why": "",
+                "guidance": "",
             }
         return {
             "state": "UPCOMING_SESSION",
-            "status": "No active Senate floor proceedings",
-            "timing": f"Next floor checkpoint is the scheduled convening on {convene_date} at {convene_time}.",
-            "why": "No active floor proceedings now; watch official sources for vote timing or floor action changes.",
+            "status": "No active floor coverage",
+            "location": "Floor / chamber area",
+            "timing": f"Next: floor convenes {convene_date} at {convene_time}.",
+            "watch": "Floor opening and vote timing",
+            "why": "",
+            "guidance": "",
         }
     if completed_pro_forma_today:
         return {
             "state": "COMPLETED_SESSION",
-            "status": "No active Senate floor proceedings",
+            "status": "Status: Senate out of active floor session",
+            "location": "No active floor coverage",
             "timing": "No active floor coverage window",
-            "why": "The Senate completed a brief pro forma session earlier today.",
+            "watch": "Next convening",
+            "why": "",
+            "guidance": "",
         }
     return {
         "state": "LOW_ACTIVITY_PERIOD",
-        "status": "Senate out of active floor session",
+        "status": "Status: Senate out of active floor session",
+        "location": "No active floor coverage",
         "timing": "No active floor coverage window",
-        "why": "Current public sources do not show active floor proceedings or an announced floor coverage window.",
+        "watch": "Next floor or vote update",
+        "why": "",
+        "guidance": "",
     }
 
 
@@ -4343,7 +4345,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
     if vote_block:
         time_label = canonical_vote_block_time(schedule_context) or vote_block.get("time_label") or "time pending"
         signal = make_coverage_signal_item(
-            f"Vote block expected — {time_label.rstrip('.')}.",
+            f"Vote block — {time_label.rstrip('.')}.",
             "upcoming",
             "upcoming_vote_window",
             "Upcoming",
@@ -4360,14 +4362,14 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
     for vote in expected_votes:
         signal_type, priority, action = _expected_vote_signal_type(vote)
         vote_text = clean(vote).rstrip(".")
-        title = f"Cloture vote — {vote_text}." if priority == "high" else f"Adoption vote — {vote_text}." if signal_type == "adoption_vote_window" else f"Scheduled vote — {vote_text}."
+        title = f"Cloture — {vote_text}." if priority == "high" else f"Adoption — {vote_text}." if signal_type == "adoption_vote_window" else f"Vote — {vote_text}."
         signal = make_coverage_signal_item(
             title,
             "upcoming",
             signal_type,
             "Upcoming",
             action,
-            "Cloture votes are high-priority logistics signals." if priority == "high" else "Setup and adoption votes are medium-priority logistics signals.",
+            "",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         )
         signal.signal_class = "primary" if priority == "high" else "secondary"
@@ -4397,7 +4399,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             status,
             "committee_hearing_window",
             timing,
-            "Use the posted committee room and start time for coverage.",
+            "Press-relevant room/time checkpoint.",
             "",
             source=committee_item.source or "Committee schedule",
         )
@@ -4428,7 +4430,9 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "Floor activity can change vote timing, access windows, and reporter staffing.",
         ))
 
-    return signals[:5]
+    floor_vote_signals = [signal for signal in signals if signal.signal_type != "committee_hearing_window"]
+    committee_signals = [signal for signal in signals if signal.signal_type == "committee_hearing_window"][:3]
+    return floor_vote_signals + committee_signals
 
 
 def coverage_signal_reasons(groups: Dict[str, List[JoltItem]], schedule_context: Dict[str, Any]) -> List[str]:
@@ -4909,7 +4913,7 @@ def dashboard(
                 {live_vote_mode}
                 <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
                 <div class="ticker" data-refresh-key="where-to-be-now">
-                    <strong>WHERE TO BE NOW</strong><br>Status: {html.escape(ticker_status)}<br>Coverage location: {html.escape(ticker_location)}<br>Coverage timing: {html.escape(coverage_timing)}<br>Watch: {html.escape(watch_list)}<br>Why this matters: {html.escape(ticker_why)}<br><strong>Coverage focus</strong><br>{html.escape(ticker_guidance)}</div>
+                    <strong>NOW</strong><br>{html.escape(ticker_status)}<br>{html.escape(ticker_location)}<br><br><strong>Next:</strong><br>{html.escape(coverage_timing)}<br><br><strong>Watch:</strong><br>{html.escape(watch_list)}</div>
 
                 {render_signal_summary(signal_reasons, len(groups.get("Votes", [])), signal_scope)}
 
