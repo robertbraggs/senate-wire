@@ -292,3 +292,83 @@ def test_no_no_vote_block_copy_when_expected_votes_exist_without_vote_block():
     assert "Motion to invoke cloture" in rendered
     assert "No vote block announced" not in rendered
     assert "timing pending" in rendered
+
+
+def test_daily_press_gallery_may_11_series_of_two_votes_source_truth():
+    sample = """
+    Monday, May 11, 2026
+    The Senate will next convene at 3:00 p.m. on Monday, May 11, 2026.
+    At 5:30 p.m. the Senate proceeds to a series of two votes:
+    1. Adoption of S.Res.690 authorizing en bloc consideration in Executive Session of 49 nominations.
+    2. Cloture on Kevin Warsh nomination.
+    """
+
+    parsed = parse_forward_floor_schedule(sample, today=date(2026, 5, 11))
+
+    assert parsed["next_convening"]["time_label"] == "3:00 p.m."
+    assert parsed["vote_block"]["time_label"] == "approx. 5:30 p.m."
+    assert parsed["vote_block"]["roll_call_votes_expected"] == 2
+    assert len(parsed["expected_votes"]) == 2
+    assert any("S.Res.690" in vote and "en bloc" in vote for vote in parsed["expected_votes"])
+    assert any("cloture" in vote.lower() and "Warsh" in vote for vote in parsed["expected_votes"])
+
+
+def test_generic_no_vote_and_floor_update_suppressed_by_specific_daily_press(monkeypatch):
+    specific = {
+        "key": "daily_press",
+        "url": "fixture://daily-press",
+        "text": "The Senate will next convene at 3:00 p.m. on Monday, May 11, 2026. At 5:30 p.m. the Senate proceeds to a series of two votes: Adoption of S.Res.690 authorizing en bloc consideration in Executive Session of 49 nominations. Cloture on Kevin Warsh nomination.",
+    }
+    generic = {
+        "key": "radio_tv",
+        "url": "fixture://generic",
+        "text": "Floor Update. No vote block announced. Routine floor update at 11:30 a.m.",
+    }
+
+    monkeypatch.setattr("app.main.fetch_forward_schedule_sources", lambda: {"loaded_sources": [], "texts": [generic, specific], "errors": {}})
+    parsed = main.build_forward_schedule_context()["schedule_context"]
+
+    assert parsed["source_name"] == "daily_press"
+    assert parsed["vote_block"]["time_label"] == "approx. 5:30 p.m."
+    assert len(parsed["expected_votes"]) == 2
+    assert all("No vote block announced" not in vote for vote in parsed["expected_votes"])
+    assert parsed["suppressed_competing_sources"]
+
+
+def test_generic_committee_listing_does_not_become_public_card_or_signal():
+    generic = main.JoltItem(
+        source="Congress.gov API", raw="Official Senate committee meeting listing", date_label=None, time_label=None,
+        sort_datetime=None, category="Committee Meetings & Hearings", title="Senate Committee",
+        urgency="scheduled", status="confirmed", confidence="high", quality="official", location=None, building=None,
+        measure=None, takeaway="Official Senate committee meeting listing.", where_to_be="", movement_cue="",
+        who_to_watch="Senate Committee", coverage_note="Official committee listing.", staff_note="", gallery_note="",
+        senators_detected=[], coverage_target="committee", press_availability="Medium", best_window="committee room / public access areas",
+        event_type="Hearing/Meeting", committee="Senate Committee", url="https://www.congress.gov/committee-meetings", topic="",
+        section_target="committee",
+    )
+
+    groups = main.grouped([generic])
+    signals = main.build_coverage_signal_items(groups, {}, datetime(2026, 5, 11, 9, 0))
+
+    assert groups["Committee Meetings & Hearings"] == []
+    assert signals == []
+
+
+def test_committee_item_renders_only_in_committee_section_not_floor_sections():
+    hearing = main.JoltItem(
+        source="Congress.gov API", raw="Judiciary hearing on judicial nominations", date_label="May 11", time_label="10:00 a.m.",
+        sort_datetime="2026-05-11T10:00:00", category="Committee Meetings & Hearings", title="Judiciary: Judicial nominations",
+        urgency="scheduled", status="confirmed", confidence="high", quality="official", location="SD-226", building="Dirksen",
+        measure=None, takeaway="Judicial nominations", where_to_be="SD-226", movement_cue="Arrive before start",
+        who_to_watch="Judiciary", coverage_note="Committee logistics", staff_note="", gallery_note="", senators_detected=[],
+        coverage_target="committee", press_availability="Medium", best_window="committee room / public access areas", event_type="Hearing",
+        committee="Judiciary", url="https://www.congress.gov/committee-meetings", topic="Judicial nominations", section_target="committee",
+    )
+    main.enrich_public_fields(hearing)
+
+    groups = main.grouped([hearing])
+
+    assert groups["Committee Meetings & Hearings"] == [hearing]
+    assert groups["Floor Action"] == []
+    assert groups["Schedule"] == []
+    assert groups["Votes"] == []

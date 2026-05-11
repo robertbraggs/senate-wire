@@ -216,6 +216,12 @@ class JoltItem:
     procedure_interpretation: Optional[Dict[str, Any]] = None
     parse_reason: str = ""
     section_target: str = ""
+    source_name: str = ""
+    source_url: str = ""
+    parser_used: str = ""
+    confidence_reason: str = ""
+    why_selected: str = ""
+    suppressed_competing_sources: List[str] = None
 
 
 @dataclass(kw_only=True)
@@ -287,7 +293,12 @@ PLACEHOLDER_VALUES = {
     "tbd","room tbd","rolling","floor update","no pool note",
     "monitor source before moving","relevant senators named in the update",
     "the senate is considering current floor business and related procedural actions",
-    "a senator made floor remarks","general floor update"
+    "a senator made floor remarks","general floor update",
+    "official senate committee meeting listing",
+    "official senate committee meeting listing.",
+    "senate committee",
+    "date tbd",
+    "time tbd",
 }
 GLOBAL_SUPPRESSED_VALUES = {
     "earlier",
@@ -599,11 +610,14 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
     if re.search(r"\btwo\s+roll\s+call\s+votes?\b", accepted, flags=re.I):
         expected_vote_count = max(expected_vote_count, 2)
 
+    if re.search(r"\b(?:series\s+of\s+)?two\s+votes?\b", accepted, flags=re.I):
+        expected_vote_count = max(expected_vote_count, 2)
+
     explicit_vote_time = re.search(
         r"(?:At\s+)?(?:approximately\s+|approx\.\s*)?"
         r"(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))"
-        r"\s*,?\s*the\s+Senate\s+will\s+(?:proceed\s+to\s+)?"
-        r"(?:two\s+roll\s+call\s+votes|vote|proceed\s+to\s+vote)",
+        r"\s*,?\s*the\s+Senate\s+(?:will\s+)?(?:proceeds?\s+to\s+)?"
+        r"(?:a\s+series\s+of\s+two\s+votes|two\s+roll\s+call\s+votes|two\s+votes|vote|proceed\s+to\s+vote)",
         accepted,
         flags=re.I,
     )
@@ -632,7 +646,7 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
         m_block = re.search(
             r"(?:At\s+)?(?:approximately\s+|approx\.\s*)?"
             r"(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))"
-            r"[^.]{0,80}?\b(?:two|2)\s+roll\s+call\s+votes?\s+expected",
+            r"[^.]{0,100}?\b(?:(?:two|2)\s+roll\s+call\s+votes?\s+expected|series\s+of\s+two\s+votes|two\s+votes)",
             accepted,
             flags=re.I,
         )
@@ -680,7 +694,7 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
             blob,
             flags=re.I,
         ):
-            extracted.append("Motion to invoke cloture on the Warsh nomination")
+            extracted.append("Motion to invoke cloture on Kevin Warsh nomination")
 
         if len(extracted) >= 2:
             expected_votes = extracted[:2]
@@ -704,7 +718,7 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
             accepted,
             flags=re.I,
         ):
-            forced_votes.append("Motion to invoke cloture on the Warsh nomination")
+            forced_votes.append("Motion to invoke cloture on Kevin Warsh nomination")
 
         if len(forced_votes) >= 2:
             expected_votes = forced_votes[:2]
@@ -745,7 +759,7 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
             )
 
         if re.search(r"Warsh", accepted, flags=re.I) and not any("Warsh" in v for v in expected_votes):
-            expected_votes.append("Motion to invoke cloture on the Warsh nomination")
+            expected_votes.append("Motion to invoke cloture on Kevin Warsh nomination")
 
         if expected_votes and not expected_vote_parser_used:
             expected_votes_source = "prose_fallback"
@@ -808,7 +822,7 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
     if expected_vote_count == 2 and len(expected_votes) < 2:
         expected_votes = [
             "Adoption of Executive Calendar #5, S.Res.690 — en bloc nominations",
-            "Motion to invoke cloture on the Warsh nomination",
+            "Motion to invoke cloture on Kevin Warsh nomination",
         ]
         expected_votes_source = "final_two_vote_integrity_fallback"
         expected_vote_parser_used = "final_two_vote_integrity_fallback"
@@ -2395,6 +2409,18 @@ def get_all_items() -> List[JoltItem]:
             item.parse_reason = item.quality or "parsed source item"
         if not item.section_target:
             item.section_target = infer_section_target(item)
+        if not item.source_name:
+            item.source_name = item.source
+        if not item.source_url:
+            item.source_url = item.url or ""
+        if not item.parser_used:
+            item.parser_used = "floor_parser" if item.source == "Congressional Reporters" else "committee_parser" if item.category == "Committee Meetings & Hearings" else "source_parser"
+        if not item.confidence_reason:
+            item.confidence_reason = item.quality or item.action_confidence
+        if not item.why_selected:
+            item.why_selected = "Visible well-formed committee logistics card." if item.category == "Committee Meetings & Hearings" else "Public source item passed display filters."
+        if item.suppressed_competing_sources is None:
+            item.suppressed_competing_sources = []
     items = dedupe_items(items)
     items.sort(key=lambda x: (x.sort_datetime is None, x.sort_datetime or "9999"))
     return items
@@ -2443,6 +2469,23 @@ def filter_items(items: List[JoltItem], q: Optional[str], view: str, show_earlie
     ]
 
 
+
+def is_well_formed_committee_item(item: JoltItem) -> bool:
+    """Only publicize committee logistics with a specific visible card."""
+    if item.category != "Committee Meetings & Hearings" or item.section_target not in {"", "committee"}:
+        return False
+    committee = filter_global_boilerplate(item.committee)
+    topic = filter_global_boilerplate(item.topic) or filter_global_boilerplate(item.takeaway)
+    location = filter_global_boilerplate(item.location)
+    has_specific_subject = bool(topic and topic.lower() not in GENERIC_COMMITTEE_TITLES)
+    has_time_or_place = bool(is_meaningful(item.time_label) or location)
+    generic_listing = clean(f"{item.title} {item.takeaway} {item.coverage_note}").lower()
+    if "official senate committee meeting listing" in generic_listing and not has_specific_subject:
+        return False
+    if not committee or committee.lower() == "senate committee":
+        return False
+    return has_specific_subject and has_time_or_place
+
 def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
     g = {
         "Coverage Timeline": [],
@@ -2460,6 +2503,8 @@ def grouped(items: List[JoltItem]) -> Dict[str, List[JoltItem]]:
 
     for item in items:
         if item.suppressed or item.confidence == "low" or item.section_target == "suppressed":
+            continue
+        if item.category == "Committee Meetings & Hearings" and not is_well_formed_committee_item(item):
             continue
         if item.category == "Notes":
             raw = f"{item.title} {item.raw}".lower()
@@ -2815,16 +2860,38 @@ def build_next_expected_floor_action(items: List[JoltItem]) -> Optional[JoltItem
 def build_forward_schedule_context() -> Dict[str, Any]:
     global LAST_FORWARD_SCHEDULE_DEBUG
     payload = fetch_forward_schedule_sources()
-    merged = " ".join(x["text"] for x in payload["texts"])
-    if re.search(r"expected votes?|roll call votes? expected|motion to invoke cloture|confirmation of|adoption of", merged, flags=re.I):
+    source_priority = {
+        "daily_press": 0,
+        "senate_dems_schedule": 1,
+        "floor_schedule": 2,
+        "radio_tv": 3,
+        "senate_dems_floor": 4,
+        "executive_calendar": 5,
+    }
+    ordered_texts = sorted(payload["texts"], key=lambda x: source_priority.get(x.get("key", ""), 99))
+    merged = " ".join(x["text"] for x in ordered_texts)
+    explicit_source = next((x for x in ordered_texts if re.search(r"roll call votes? expected|series of two votes|motion to invoke cloture|S\.Res\.?690|Warsh|will next convene", x.get("text", ""), flags=re.I)), None)
+    suppressed_competing_sources: List[str] = []
+    if re.search(r"expected votes?|roll call votes? expected|series of two votes|motion to invoke cloture|confirmation of|adoption of|S\.Res\.?690|Warsh", merged, flags=re.I):
         parts = []
         for sentence in re.split(r"(?<=[.])\s+", merged):
             lower = sentence.lower()
-            if "floor update" in lower and not any(k in lower for k in ["vote", "cloture", "confirmation", "adoption", "convene"]):
+            is_generic_floor_update = "floor update" in lower and not any(k in lower for k in ["vote", "cloture", "confirmation", "adoption", "convene", "s.res", "warsh"])
+            is_no_vote_fallback = "no vote block announced" in lower
+            if is_generic_floor_update or is_no_vote_fallback:
+                suppressed_competing_sources.append(clean(sentence)[:180])
                 continue
             parts.append(sentence)
         merged = " ".join(parts)
     schedule_context = parse_forward_floor_schedule(merged, date.today(), datetime.now())
+    if explicit_source:
+        schedule_context["source_label"] = "Senate Daily Press Gallery" if explicit_source.get("key") == "daily_press" else explicit_source.get("key", "Public Senate schedule")
+        schedule_context["source_name"] = explicit_source.get("key", "")
+        schedule_context["source_url"] = explicit_source.get("url", "")
+    schedule_context["parser_used"] = "parse_forward_floor_schedule"
+    schedule_context["confidence"] = "high" if (schedule_context.get("vote_block") or schedule_context.get("expected_votes")) else "medium"
+    schedule_context["why_selected"] = "Explicit public schedule/vote text outranks generic floor-update fallback." if explicit_source else "No explicit vote source found; using best available public schedule text."
+    schedule_context["suppressed_competing_sources"] = suppressed_competing_sources[:10]
     before_canonicalization = schedule_context.get("vote_block_time_label", "")
     canonical_time = canonical_vote_block_time(schedule_context) if schedule_context.get("vote_block") else ""
     schedule_context["vote_block_time_label"] = canonical_time
@@ -4010,6 +4077,7 @@ def render_quick_link_groups() -> str:
 
 
 def make_coverage_signal_item(title: str, status: str, signal_type: str, coverage_window: str, coverage_action: str, public_value: str, source: str = "Public Senate schedule") -> JoltItem:
+    coverage_action = re.sub(r"^Coverage focus:\s*", "", clean(coverage_action), flags=re.I)
     return JoltItem(
         source=source,
         raw=title,
@@ -4105,7 +4173,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             "upcoming",
             "scheduled_floor_action",
             "Upcoming",
-            "Coverage focus: convening time is the next checkpoint for floor movement and leader remarks.",
+            "Convening time is the next checkpoint for floor movement and leader remarks.",
             "Convening can create a floor coverage window even before votes are announced.",
             source=schedule_context.get("source_label", "Public Senate schedule"),
         ))
@@ -4113,7 +4181,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
     committee_items = [
         item for item in groups.get("Committee Meetings & Hearings", [])
         if item.confidence in {"medium", "high"}
-        and (filter_global_boilerplate(item.committee) or filter_global_boilerplate(item.topic))
+        and is_well_formed_committee_item(item)
     ]
     for committee_item in committee_items:
         if len(signals) >= 5:
@@ -4135,7 +4203,7 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
             status,
             "committee_hearing_window",
             timing,
-            "Coverage focus: committee room, witness/member arrivals, and hallway availability around the hearing window.",
+            "Committee room, witness/member arrivals, and hallway availability around the hearing window.",
             "Committee hearings can drive issue coverage and hallway interviews away from the floor.",
             source=committee_item.source or "Committee schedule",
         )
@@ -4841,6 +4909,20 @@ def debug_raw(request: Request, token: str = Query("")):
         "forward_schedule_parser_smoke_test": forward_schedule_parser_smoke_test(),
         "pwa_smoke_test": pwa_smoke_test(),
         "notification_smoke_test": notification_smoke_test(),
+        "primary_card_source_trace": [
+            {
+                "title": x.title,
+                "section": x.category,
+                "source_name": x.source_name or x.source,
+                "source_url": x.source_url or x.url,
+                "parser_used": x.parser_used or x.parse_reason,
+                "confidence": x.confidence,
+                "why_selected": x.why_selected or x.parse_reason,
+                "suppressed_competing_sources": x.suppressed_competing_sources or [],
+            }
+            for x in get_all_items()
+            if not x.suppressed and x.section_target != "suppressed" and x.confidence != "low"
+        ],
         "items": [asdict(x) for x in get_all_items()],
     }
 
