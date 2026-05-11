@@ -702,3 +702,89 @@ def test_header_timestamp_has_stable_width_to_avoid_reflow():
 
     assert ".last-updated {{ display: inline-block; min-width: 170px;" in main_source
     assert "font-variant-numeric: tabular-nums" in main_source
+
+
+def test_top_banner_uses_document_flow_not_overlapping_fixed_stack():
+    rendered = main.render_alert_banner([
+        {"title": "Vote block expected", "body": "Vote block is inside the next hour."}
+    ])
+
+    assert 'class="alert-banner"' in rendered
+    source = main.BASE_DIR.joinpath("app/main.py").read_text()
+    assert ".alert-banner {{ position: relative; top: auto;" in source
+    assert ".alert-banner {{ position: sticky; top: 0;" not in source
+    assert ".live-controls {{ position: sticky; top: 0;" not in source
+
+
+def test_committee_hearing_signal_renders_matching_hearing_card_and_no_empty_state():
+    item = make_activity_item(
+        "Judiciary hearing on judicial nominations",
+        "2026-05-11T14:30:00",
+        category="Committee Meetings & Hearings",
+        status="confirmed",
+    )
+    item.source = "Radio-TV Gallery"
+    item.committee = "Judiciary Committee"
+    item.topic = "Judicial nominations"
+    item.location = "SD-226"
+    item.date_label = "May 11"
+    item.time_label = "2:30 p.m."
+    item.url = "https://www.radiotv.senate.gov/"
+    main.enrich_public_fields(item)
+
+    groups = main.grouped([item])
+    signals = main.build_coverage_signal_items(groups, {})
+    hearings_rendered = main.section("Committee Meetings & Hearings", groups["Committee Meetings & Hearings"], "reporter", hide_empty=True)
+    signals_rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+
+    assert len(signals) == 1
+    assert signals_rendered.count('<article class="card">') == len(signals)
+    assert "Judiciary Committee" in hearings_rendered
+    assert "Judicial nominations" in hearings_rendered
+    assert "SD-226" in hearings_rendered
+    assert "Radio-TV Gallery" in hearings_rendered
+    assert "No active committee hearings detected" not in hearings_rendered
+    assert "Judiciary Committee" in signals_rendered
+    assert "Committee hearing window scheduled" not in signals_rendered
+
+
+def test_signal_count_equals_visible_rendered_signal_items_with_committee_detail():
+    hearing = make_activity_item(
+        "HELP hearing on health policy",
+        "2026-05-11T10:00:00",
+        category="Committee Meetings & Hearings",
+        status="confirmed",
+    )
+    hearing.committee = "HELP Committee"
+    hearing.topic = "Health policy oversight"
+    hearing.location = "SD-430"
+    main.enrich_public_fields(hearing)
+    schedule_context = {
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+        "expected_votes": ["Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination."],
+    }
+
+    signals = main.build_coverage_signal_items(main.grouped([hearing]), schedule_context)
+    rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+    summary = main.render_signal_summary([item.title for item in signals], 0, main.coverage_signal_scope(signals))
+
+    assert rendered.count('<article class="card">') == len(signals)
+    assert f"{len(signals)} Upcoming Coverage" in rendered
+    assert f"<b>{len(signals)}</b>Upcoming Coverage" in summary
+    assert summary.count("<li>") == len(signals)
+
+
+def test_no_contradictory_committee_empty_state_when_hearing_signal_exists():
+    hearing = make_activity_item("Committee hearing", "2026-05-11T09:30:00", category="Committee Meetings & Hearings", status="confirmed")
+    hearing.committee = "Finance Committee"
+    hearing.topic = "Tax administration"
+    hearing.location = "SD-215"
+    main.enrich_public_fields(hearing)
+
+    groups = main.grouped([hearing])
+    signals = main.build_coverage_signal_items(groups, {})
+    page_parts = main.section("Committee Meetings & Hearings", groups["Committee Meetings & Hearings"], "reporter", hide_empty=True) + main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+
+    assert signals
+    assert "No active committee hearings detected" not in page_parts
+    assert "Finance Committee" in page_parts

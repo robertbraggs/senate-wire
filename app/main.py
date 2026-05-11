@@ -749,6 +749,25 @@ def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime]
             expected_votes_source = "prose_fallback"
             expected_vote_parser_used = "prose_fallback"
 
+    if len(expected_votes) < max(expected_vote_count, 1):
+        list_match = re.search(
+            r"(?:expected votes?|roll call votes? expected|votes? expected)\s*:?(.*?)(?=\b(?:The Senate will|When the Senate|Cloture has been filed|Floor Update|Wrap Up)\b|$)",
+            accepted,
+            flags=re.I | re.S,
+        )
+        if list_match:
+            vote_blob = clean(list_match.group(1) or "")
+            candidates = re.split(r"\s*(?:;|\n|•|\u2022|\s+-\s+|\s+\d+[.)]\s+)\s*", vote_blob)
+            for candidate in candidates:
+                candidate = clean(candidate).strip(" -.;")
+                if not candidate or len(candidate) < 12:
+                    continue
+                if re.search(vote_marker_re, candidate, flags=re.I):
+                    expected_votes.append(candidate)
+            if len(expected_votes) > parsed_expected_vote_count:
+                expected_votes_source = expected_votes_source or "expected_vote_list_block"
+                expected_vote_parser_used = expected_vote_parser_used or "expected_vote_list_block"
+
     cloture_filed = []
     for m in re.finditer(
         r"cloture (?:has been )?filed on\s*(Executive Calendar\s*#\d+\s+[^.;]*)",
@@ -1957,6 +1976,11 @@ def classify_ebb(raw: str) -> Dict[str, str]:
         takeaway = clean(structured.get("description") or "House schedule note from EBB.")
         coverage_note = "House item from EBB; keep in House/Joint notes unless Senate coverage relevance is clear."
         where = location or "House Floor"
+    elif "hearing" in lower or "markup" in lower or "business meeting" in lower or committee:
+        category = "Committee Meetings & Hearings"
+        event_type = title if title != "EBB Event" else "Committee hearing"
+        takeaway = clean(structured.get("description") or structured.get("title") or raw or "Committee hearing or meeting listing.")
+        coverage_note = "Use the committee room, timing, and witness/member arrivals to plan coverage."
     else:
         category = "Events"
         event_type = title
@@ -2099,6 +2123,90 @@ def fetch_ebb_items() -> List[JoltItem]:
     return dedupe_items(items)[:30]
 
 
+
+def fetch_radio_tv_gallery_items() -> List[JoltItem]:
+    """Parse Radio-TV Gallery public listings into structured logistics items.
+
+    Radio-TV pages can include committee hearings and press/media listings that are
+    operationally useful even when EBB or Congress.gov disagree. Treat committee
+    listings as committee cards, not generic floor updates.
+    """
+    try:
+        soup = BeautifulSoup(fetch_url(RADIO_TV_URL, timeout=15), "html.parser")
+        SOURCE_STATUS["radio_tv"] = "loaded"
+    except Exception:
+        SOURCE_STATUS["radio_tv"] = "error: source unavailable"
+        return []
+
+    remove_noise(soup)
+    text = clean(soup.get_text(" "))
+    raw_events = split_ebb_events(text)
+    full_structured = parse_ebb_structured_fields(text)
+    if full_structured.get("title") and (full_structured.get("location") or infer_location(text)):
+        raw_events = [text]
+    if not raw_events:
+        SOURCE_STATUS["radio_tv"] = "loaded: no event-like items parsed"
+        return []
+
+    items: List[JoltItem] = []
+    for raw in raw_events[:40]:
+        structured = parse_ebb_structured_fields(raw)
+        d = parse_date(structured.get("event_date") or "") or parse_date(raw)
+        t = parse_time(structured.get("event_time") or "") or parse_time(raw)
+        c = classify_ebb(raw)
+        chamber = c.get("chamber", "Senate")
+        if chamber == "House" or chamber not in {"Senate", "Joint"}:
+            continue
+        if not is_joint_or_senate_relevant_ebb(structured, raw):
+            continue
+        has_committee_signal = c["category"] == "Committee Meetings & Hearings"
+        has_media_signal = any(k in clean(f"{c['title']} {raw}").lower() for k in ["stakeout", "press conference", "media availability", "briefing", "camera spray", "photo spray"])
+        if not (has_committee_signal or has_media_signal):
+            continue
+        if not (d or t or c.get("location") != "Location not parsed" or has_committee_signal):
+            continue
+
+        senators = detect_senators(raw)
+        committee = infer_ebb_committee(raw)
+        topic = extract_topic(raw) or clean(structured.get("description") or structured.get("title") or raw)
+        item = JoltItem(
+            source="Radio-TV Gallery",
+            raw=shorten(raw, 700),
+            date_label=fmt_date(d),
+            time_label=fmt_time(t),
+            sort_datetime=sort_dt(d, t),
+            category=c["category"],
+            title=c["title"] if c["title"] != "EBB Event" else (topic[:90] if topic else "Radio-TV Gallery listing"),
+            urgency=c["urgency"],
+            status=c["status"],
+            confidence=c["confidence"],
+            quality="Radio-TV Gallery public listing",
+            location=c["location"],
+            coverage_location=c["location"],
+            building=c["building"],
+            measure=None,
+            takeaway=topic or c["takeaway"],
+            where_to_be=c["where_to_be"],
+            movement_cue=c["movement_cue"],
+            who_to_watch=c["who_to_watch"],
+            coverage_note=c["coverage_note"],
+            staff_note="Use Radio-TV Gallery listing to reconcile committee/media logistics.",
+            gallery_note="Confirm room, camera setup, credential access, and committee direction.",
+            senators_detected=senators,
+            coverage_target=infer_coverage_target(raw, senators, committee, None),
+            press_availability="Medium",
+            best_window="committee room / public access areas" if has_committee_signal else "scheduled event location",
+            event_type=c.get("event_type"),
+            committee=committee,
+            url=RADIO_TV_URL,
+            topic=topic,
+        )
+        item.coverage_target = classify_coverage_target(item)
+        item.procedure_interpretation = classify_event_text(raw)
+        items.append(apply_past_status(item))
+
+    return dedupe_items(items)[:30]
+
 def fetch_x_items() -> List[JoltItem]:
     if not X_BEARER_TOKEN:
         SOURCE_STATUS["x"] = "disabled: missing X_BEARER_TOKEN"
@@ -2188,7 +2296,7 @@ def dedupe_items(items: List[JoltItem]) -> List[JoltItem]:
 
 
 def get_all_items() -> List[JoltItem]:
-    items = get_floor_items() + fetch_ebb_items() + fetch_committee_meetings_items() + fetch_x_items()
+    items = get_floor_items() + fetch_ebb_items() + fetch_radio_tv_gallery_items() + fetch_committee_meetings_items() + fetch_x_items()
     for item in items:
         low = f"{item.title} {item.raw}".lower()
         if item.source == "EBB":
@@ -2646,6 +2754,14 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     global LAST_FORWARD_SCHEDULE_DEBUG
     payload = fetch_forward_schedule_sources()
     merged = " ".join(x["text"] for x in payload["texts"])
+    if re.search(r"expected votes?|roll call votes? expected|motion to invoke cloture|confirmation of|adoption of", merged, flags=re.I):
+        parts = []
+        for sentence in re.split(r"(?<=[.])\s+", merged):
+            lower = sentence.lower()
+            if "floor update" in lower and not any(k in lower for k in ["vote", "cloture", "confirmation", "adoption", "convene"]):
+                continue
+            parts.append(sentence)
+        merged = " ".join(parts)
     schedule_context = parse_forward_floor_schedule(merged, date.today(), datetime.now())
     before_canonicalization = schedule_context.get("vote_block_time_label", "")
     canonical_time = canonical_vote_block_time(schedule_context) if schedule_context.get("vote_block") else ""
@@ -2725,14 +2841,15 @@ def render_next_expected_floor_action(item: Optional[JoltItem], context: Dict[st
         vote_label = " · ".join(x for x in [vote_date_label, vote_block_time_label] if x) or "Future floor action not yet scheduled"
 
         votes_to_render = expected_votes[:6]
-        if vote_block:
-            if votes_to_render:
-                votes_html = "".join(
-                    f"<li><strong>{html.escape(classify_expected_vote(v)[0])}</strong>: {html.escape(v)}</li>"
-                    for v in votes_to_render
-                )
-            else:
-                votes_html = "<li>Expected votes pending official listing</li>"
+        if votes_to_render:
+            votes_html = "".join(
+                f"<li><strong>{html.escape(classify_expected_vote(v)[0])}</strong>: {html.escape(v)}</li>"
+                for v in votes_to_render
+            )
+            if not vote_block:
+                votes_html += "<li>Expected vote details listed; official vote block timing pending.</li>"
+        elif vote_block:
+            votes_html = "<li>Expected votes pending official listing</li>"
         else:
             votes_html = "<li>No vote block announced.</li>"
 
@@ -3058,11 +3175,29 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
         links.append(f"<a class='source' href='{html.escape(item.url)}' target='_blank'>{'Open Congressional Reporters' if item.source == 'Congressional Reporters' else 'Open source'}</a>")
 
     if item.category == "Committee Meetings & Hearings":
-        has_real_details = all([
-            is_meaningful(item.committee), is_meaningful(item.topic), is_meaningful(item.location), is_meaningful(item.time_label)
-        ])
-        if not has_real_details:
-            return ""
+        committee = filter_global_boilerplate(item.committee) or "Senate committee"
+        topic = filter_global_boilerplate(item.topic) or filter_global_boilerplate(item.takeaway) or filter_global_boilerplate(item.raw)
+        location = filter_global_boilerplate(item.location) or "Room/location TBD"
+        source_label = item.source or "Committee schedule"
+        coverage_relevance = filter_global_boilerplate(item.public_value) or filter_global_boilerplate(item.coverage_note) or "Committee hearing can drive issue coverage, witness/member arrivals, and hallway interviews."
+        rows = [
+            ("Committee", committee),
+            ("Topic", topic or item.title or "Hearing details pending"),
+            ("Date", display_date or "Date TBD"),
+            ("Time", item.time_label or "Time TBD"),
+            ("Room/location", location),
+            ("Source", source_label),
+            ("Coverage relevance", coverage_relevance),
+        ]
+        logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in rows if is_meaningful(v)) + "</div>"
+        link = item.url or COMMITTEE_SCHEDULE_URL
+        return f"""
+        <article class="card">
+            <h3>{html.escape(item.title if is_meaningful(item.title) else 'Committee hearing')}</h3>
+            {logistics}
+            <div class='source-links'><a class='source' href='{html.escape(link)}' target='_blank'>Open source</a></div>
+        </article>
+        """
 
     if item.category == "Coverage Signals":
         logistics_rows = []
@@ -3232,13 +3367,15 @@ def render_key_votes_section(votes: List[JoltItem], context: Dict[str, Any], vie
     next_votes_line = ""
     if vote_block_date or key_votes_time_label:
         next_votes_line = f"Next expected votes: {vote_block_date} · {key_votes_time_label}"
-    fallback = "No votes scheduled today."
+    if not votes and not next_votes_line:
+        return '<div hidden data-refresh-key="key-votes"></div>'
+    fallback = "No votes currently underway."
     if next_votes_line:
         message = f"{fallback} Next expected vote window is {html.escape(vote_block_date)} at {html.escape(key_votes_time_label)}."
     else:
         message = fallback
     return f"""
-    <section class="section">
+    <section class="section" data-refresh-key="key-votes">
         <h2>Key Votes</h2>
         <p class="empty">{message}</p>
     </section>
@@ -3905,19 +4042,35 @@ def build_coverage_signal_items(groups: Dict[str, List[JoltItem]], schedule_cont
         ))
 
     committee_items = groups.get("Committee Meetings & Hearings", [])
-    if committee_items:
-        status = "current" if any(item.status in {"current", "active", "live"} for item in committee_items) else "upcoming"
+    for committee_item in committee_items:
+        if len(signals) >= 5:
+            break
+        status = "current" if committee_item.status in {"current", "active", "live"} else "upcoming"
         timing = "Current" if status == "current" else "Upcoming"
-        label = "Committee hearing activity is active now." if status == "current" else "Committee hearing window scheduled."
-        signals.append(make_coverage_signal_item(
-            label,
+        when = " · ".join(x for x in [committee_item.date_label, committee_item.time_label] if is_meaningful(x)) or "time pending"
+        place = filter_global_boilerplate(committee_item.location) or "room/location pending"
+        committee = filter_global_boilerplate(committee_item.committee) or "Senate committee"
+        topic = filter_global_boilerplate(committee_item.topic) or filter_global_boilerplate(committee_item.takeaway) or committee_item.title
+        title = f"{committee}: {topic}" if topic and topic.lower() not in committee.lower() else committee_item.title
+        signal = make_coverage_signal_item(
+            f"{title} — {when} at {place}.",
             status,
             "committee_hearing_window",
             timing,
-            "Coverage focus: committee rooms, witness lists, and member availability around the hearing window.",
+            "Coverage focus: committee room, witness/member arrivals, and hallway availability around the hearing window.",
             "Committee hearings can drive issue coverage and hallway interviews away from the floor.",
-            source="Committee schedule",
-        ))
+            source=committee_item.source or "Committee schedule",
+        )
+        signal.location = committee_item.location
+        signal.coverage_location = committee_item.location
+        signal.date_label = committee_item.date_label
+        signal.time_label = committee_item.time_label
+        signal.sort_datetime = committee_item.sort_datetime
+        signal.committee = committee_item.committee
+        signal.topic = committee_item.topic
+        signal.url = committee_item.url
+        signal.who_to_watch = committee
+        signals.append(signal)
 
     floor_items = groups.get("Floor Action", []) + groups.get("Schedule", [])
     if floor_items and not signals:
@@ -4326,7 +4479,7 @@ def dashboard(
                 .button {{ min-height: 44px; border: 0; border-radius: 999px; padding: 11px 16px; background: var(--color-primary-navy); color: var(--color-card-background); font-weight: 800; cursor: pointer; }}
                 .button.secondary {{ background: var(--color-primary-navy); color: var(--color-card-background); }}
                 .last-updated {{ display: inline-block; min-width: 170px; font-size: 14px; opacity: .95; font-variant-numeric: tabular-nums; }}
-                .alert-banner {{ position: sticky; top: 0; z-index: 30; display: grid; gap: 4px; padding: 12px 16px; background: var(--color-deep-senate-navy); color: var(--color-card-background); box-shadow: 0 8px 20px rgba(15, 23, 42, .22); }}
+                .alert-banner {{ position: relative; top: auto; z-index: 30; display: grid; gap: 4px; padding: 12px 16px; background: var(--color-deep-senate-navy); color: var(--color-card-background); box-shadow: 0 8px 20px rgba(15, 23, 42, .22); }}
                 .alert-banner strong {{ font-size: 17px; }}
                 .offline-warning {{ margin-bottom: 12px; padding: 12px 14px; background: var(--color-light-background); border: 1px solid var(--color-border-gray); border-radius: 14px; color: var(--color-text-muted); font-weight: 700; }}
                 main {{ scroll-margin-top: 90px; }}
@@ -4373,8 +4526,7 @@ def dashboard(
                     .sub {{ font-size: 14px; }}
                     .ticker, .outlook, .card, .stat, .links, .empty {{ border-radius: 16px; padding: 14px; }}
                     .summary, .topgrid {{ grid-template-columns: 1fr; }}
-                    .live-controls {{ position: sticky; top: 0; }}
-                    .button {{ flex: 1 1 130px; }}
+                        .button {{ flex: 1 1 130px; }}
                 }}
 
                 @media(max-width: 760px) {{
@@ -4424,7 +4576,7 @@ def dashboard(
 
                 {section("Senate Floor Activity", groups.get("Schedule", []), view, hide_empty=True)}
                 {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
-                <section class="section" data-refresh-key="forward-look-legislation-nominations"><h2>Upcoming Vote / Floor Coverage Windows</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>
+                {'' if expected_votes else f'<section class="section" data-refresh-key="forward-look-legislation-nominations"><h2>Upcoming Vote / Floor Coverage Windows</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>'}
                 {section("News Events & Stakeouts", groups.get("Events", []), view, hide_empty=True)}
                 {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view) if groups.get("House / Joint Coverage Notes", []) else ""}
                 {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view, hide_empty=True)}
