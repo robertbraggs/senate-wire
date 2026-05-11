@@ -372,3 +372,68 @@ def test_committee_item_renders_only_in_committee_section_not_floor_sections():
     assert groups["Floor Action"] == []
     assert groups["Schedule"] == []
     assert groups["Votes"] == []
+
+
+def test_pre_convening_status_is_not_active_before_gavel():
+    context = main.apply_schedule_window_lifecycle({
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+        "vote_block": {"date": "2026-05-11", "date_label": "May 11", "time_label": "approx. 5:30 p.m."},
+    }, datetime(2026, 5, 11, 14, 0))
+
+    status = main.homepage_operational_status(context, [], datetime(2026, 5, 11, 14, 0))
+
+    assert status["state"] == "PRE_CONVENING"
+    assert status["status"] == "Senate convenes at 3:00 p.m."
+    assert status["location"] == "Capitol / floor-adjacent standby"
+    assert status["timing"] == "Convening window begins around 15–30 minutes before gavel."
+    assert status["status"] != "Senate floor session active"
+
+
+def test_may_11_logistics_signals_preserve_convening_vote_block_and_individual_votes():
+    sample = """
+    The Senate will next convene at 3:00 p.m. on Monday, May 11, 2026.
+    At approximately 5:30 p.m., 2 roll call votes expected.
+    Expected votes:
+    1. Adoption of Executive Calendar #5, S.Res.690, authorizing en bloc consideration in Executive Session of 49 nominations.
+    2. Motion to invoke cloture on Executive Calendar #728 Kevin Warsh nomination.
+    """
+    context = parse_forward_floor_schedule(sample, today=date(2026, 5, 11), now=datetime(2026, 5, 11, 14, 0))
+
+    signals = main.build_coverage_signal_items({}, context, datetime(2026, 5, 11, 14, 0))
+    rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True, hide_empty=True)
+    titles = [signal.title for signal in signals]
+
+    assert len(signals) == 4
+    assert rendered.count('<article class="card">') == len(signals)
+    assert any(title == "Senate convenes — 3:00 p.m." for title in titles)
+    assert any(title == "Vote block expected — approx. 5:30 p.m." for title in titles)
+    assert any("Adoption vote" in title and "S.Res.690" in title for title in titles)
+    assert any("Cloture vote" in title and "Warsh" in title for title in titles)
+    assert [signal.signal_type for signal in signals].count("cloture_vote_window") == 1
+    assert next(signal for signal in signals if signal.signal_type == "cloture_vote_window").signal_score == 90
+    assert next(signal for signal in signals if signal.signal_type == "adoption_vote_window").signal_score == 70
+
+
+def test_active_session_requires_trusted_floor_confirmation():
+    context = main.apply_schedule_window_lifecycle({
+        "next_convening": {"date": "2026-05-11", "date_label": "May 11", "time_label": "3:00 p.m."},
+    }, datetime(2026, 5, 11, 15, 5))
+    unconfirmed = main.homepage_operational_status(context, [], datetime(2026, 5, 11, 15, 5))
+
+    confirmed_item = main.make_coverage_signal_item(
+        "Senate convened and resumed consideration of S.Res.690.",
+        "current",
+        "floor_proceeding_underway",
+        "Current",
+        "Work the chamber area and watch vote timing.",
+        "Official floor activity is underway.",
+        source="Congressional Reporters",
+    )
+    confirmed_item.raw = "10:04 a.m. The Senate convened and resumed consideration of S.Res.690."
+    confirmed = main.homepage_operational_status(context, [confirmed_item], datetime(2026, 5, 11, 15, 5))
+
+    assert unconfirmed["state"] == "AWAITING_FLOOR_CONFIRMATION"
+    assert unconfirmed["status"] != "Senate floor session active"
+    assert confirmed["state"] == "ACTIVE_SESSION"
+    assert confirmed["status"] == "Senate floor session active"
+    assert confirmed["location"] == "Senate floor / chamber area"
