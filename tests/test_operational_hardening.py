@@ -739,12 +739,12 @@ def test_committee_hearing_signal_renders_matching_hearing_card_and_no_empty_sta
 
     assert len(signals) == 1
     assert signals_rendered.count('<article class="card">') == len(signals)
-    assert "Judiciary Committee" in hearings_rendered
+    assert "Judiciary" in hearings_rendered
     assert "Judicial nominations" in hearings_rendered
     assert "SD-226" in hearings_rendered
     assert "Radio-TV Gallery" in hearings_rendered
     assert "No active committee hearings detected" not in hearings_rendered
-    assert "Judiciary Committee" in signals_rendered
+    assert "Judiciary" in signals_rendered
     assert "Committee hearing window scheduled" not in signals_rendered
 
 
@@ -787,4 +787,125 @@ def test_no_contradictory_committee_empty_state_when_hearing_signal_exists():
 
     assert signals
     assert "No active committee hearings detected" not in page_parts
-    assert "Finance Committee" in page_parts
+    assert "Finance" in page_parts
+
+
+def test_radio_tv_committee_listing_parses_logistics_fields(monkeypatch):
+    html = """
+    <html><body>
+    3:00 PM Judiciary hearing SH-216. Coverage: SRS Channel
+    11:00 AM Armed Services open hearing SD-G50. Coverage: Open hearing
+    </body></html>
+    """
+    monkeypatch.setattr(main, "fetch_url", lambda *args, **kwargs: html)
+
+    items = main.fetch_radio_tv_gallery_items()
+
+    judiciary = next(item for item in items if item.committee == "Judiciary")
+    armed = next(item for item in items if item.committee == "Armed Services")
+    assert judiciary.time_label == "3:00 p.m."
+    assert judiciary.location == "SH-216"
+    assert judiciary.coverage_note == "SRS Channel"
+    assert armed.time_label == "11:00 a.m."
+    assert armed.location == "SD-G50"
+    assert "Open hearing" in armed.coverage_note
+
+
+def test_radio_tv_location_field_excludes_extra_hearing_text(monkeypatch):
+    html = """
+    <html><body>
+    3:00 PM Judiciary hearing SH-216. Coverage: SRS Channel
+    9:30 AM Armed Services CLOSED hearing SD-G50. Coverage: Closed hearing
+    </body></html>
+    """
+    monkeypatch.setattr(main, "fetch_url", lambda *args, **kwargs: html)
+
+    items = main.fetch_radio_tv_gallery_items()
+
+    locations = {item.committee: item.location for item in items}
+    assert locations["Judiciary"] == "SH-216"
+    assert "Armed Services" not in locations["Judiciary"]
+    assert "Coverage" not in locations["Judiciary"]
+
+
+def test_committee_card_suppresses_long_descriptions():
+    hearing = make_activity_item(
+        "Full Committee Hearing: Oversight of a Very Long Subject",
+        "2026-05-11T15:00:00",
+        category="Committee Meetings & Hearings",
+        status="confirmed",
+    )
+    hearing.source = "Radio-TV Gallery"
+    hearing.committee = "Judiciary Committee"
+    hearing.topic = "This hearing will examine a very long description. Witnesses will testify. Members will ask questions."
+    hearing.takeaway = hearing.topic
+    hearing.location = "SH-216"
+    hearing.time_label = "3:00 p.m."
+    hearing.coverage_note = "SRS Channel"
+
+    rendered = main.item_card(hearing)
+
+    assert "<h3>Judiciary</h3>" in rendered
+    assert "SRS Channel" in rendered
+    assert "Witnesses will testify" not in rendered
+    assert "Coverage relevance" not in rendered
+    assert "Full Committee Hearing" not in rendered
+
+
+def test_radio_tv_duplicate_suppresses_generic_congress_committee_item():
+    radio = make_activity_item("Judiciary", "2026-05-11T15:00:00", category="Committee Meetings & Hearings", status="confirmed")
+    radio.source = "Radio-TV Gallery"
+    radio.committee = "Judiciary Committee"
+    radio.topic = ""
+    radio.location = "SH-216"
+    radio.time_label = "3:00 p.m."
+    radio.coverage_note = "SRS Channel"
+
+    congress = make_activity_item("Hearing on judicial nominations", "2026-05-11T15:00:00", category="Committee Meetings & Hearings", status="confirmed")
+    congress.source = "Congress.gov API"
+    congress.committee = "Committee on Judiciary"
+    congress.topic = "Official Senate committee meeting listing."
+    congress.location = "SH-216"
+    congress.time_label = "3:00 p.m."
+    congress.coverage_note = "Official committee listing."
+
+    deduped = main.dedupe_items([congress, radio])
+
+    assert len(deduped) == 1
+    assert deduped[0].source == "Radio-TV Gallery"
+    assert deduped[0].suppressed_competing_sources == ["Congress.gov API"]
+
+
+def test_committee_signal_is_short_and_matches_visible_card():
+    hearing = make_activity_item("Judiciary hearing on a long topic", "2026-05-11T15:00:00", category="Committee Meetings & Hearings", status="confirmed")
+    hearing.source = "Radio-TV Gallery"
+    hearing.committee = "Judiciary Committee"
+    hearing.topic = "A long topic that should not be shown in the coverage signal"
+    hearing.location = "SH-216"
+    hearing.time_label = "3:00 p.m."
+    hearing.coverage_note = "SRS Channel"
+    main.enrich_public_fields(hearing)
+
+    groups = main.grouped([hearing])
+    signals = main.build_coverage_signal_items(groups, {})
+    card = main.item_card(groups["Committee Meetings & Hearings"][0])
+
+    assert signals[0].title == "Judiciary hearing — 3:00 p.m., SH-216"
+    assert "Judiciary" in card
+    assert "SH-216" in card
+    assert "long topic" not in signals[0].title.lower()
+
+
+def test_committee_item_does_not_appear_in_floor_coverage_timeline():
+    hearing = make_activity_item("Judiciary hearing", "2026-05-11T15:00:00", category="Committee Meetings & Hearings", status="confirmed")
+    hearing.source = "Radio-TV Gallery"
+    hearing.committee = "Judiciary Committee"
+    hearing.topic = "Judicial nominations"
+    hearing.location = "SH-216"
+    hearing.time_label = "3:00 p.m."
+    main.enrich_public_fields(hearing)
+
+    groups = main.grouped([hearing])
+
+    assert groups["Committee Meetings & Hearings"] == [hearing]
+    assert hearing not in groups["Coverage Timeline"]
