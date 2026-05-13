@@ -3,8 +3,10 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Dict, Tuple, Any
 import re
+import hashlib
 import html
 import json
+import logging
 import os
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -42,6 +44,7 @@ EXECUTIVE_CALENDAR_URL = "https://www.senate.gov/legislative/LIS/executive_calen
 FLOOR_ACTIVITY_URL = "https://www.senate.gov/legislative/floor_activity_pail.htm"
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -395,6 +398,84 @@ def fetch_forward_schedule_sources() -> Dict[str, Any]:
         except Exception as exc:
             errors[key] = sanitize_error_message(exc)
     return {"loaded_sources": loaded, "texts": texts, "errors": errors}
+
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _radio_tv_payload_diagnostics(source_texts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    radio_text = next((x.get("text", "") for x in source_texts if x.get("key") == "radio_tv"), "")
+    snapshot = get_source_snapshot("radio_tv") or {}
+    payload = snapshot.get("payload") or {}
+    content_hash = payload.get("content_hash") or (_sha256_text(radio_text) if radio_text else "")
+    previous_hash = payload.get("previous_content_hash") or ""
+    hash_changed = bool(payload.get("hash_changed")) or bool(previous_hash and content_hash and previous_hash != content_hash)
+    return {
+        "text": radio_text,
+        "content_hash": content_hash,
+        "previous_hash": previous_hash,
+        "hash_changed": hash_changed,
+    }
+
+
+def _extract_radio_tv_vote_times(text: str) -> List[str]:
+    if not text:
+        return []
+    times: List[str] = []
+    patterns = [
+        r"(?:At\s+)?(?:approximately\s+|approx\.\s*)?(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))[^.]{0,120}?(?:roll\s+call\s+votes?|votes?\s+expected|the\s+Senate\s+will\s+vote)",
+        r"(?:roll\s+call\s+votes?|votes?\s+expected)[^.]{0,120}?(?:at|@)\s+(?:approximately\s+|approx\.\s*)?(\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm))",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            raw = match.group(1)
+            label = normalize_public_time_label("approx. " + raw)
+            if label and label not in times:
+                times.append(label)
+    return times[:6]
+
+
+def _radio_tv_votes_detected(text: str) -> bool:
+    if not text:
+        return False
+    if re.search(r"roll\s+call\s+votes?\s+expected", text, flags=re.I):
+        return True
+    if re.search(r"(?:^|\s)(?:\d+\.|[-•])\s*(?:Motion|Adoption|Confirmation|Cloture|Passage)\b", text, flags=re.I):
+        return True
+    return bool(_extract_radio_tv_vote_times(text))
+
+
+def _force_radio_tv_expected_today(schedule_context: Dict[str, Any], radio_text: str, parsed_vote_times: List[str]) -> None:
+    if not _radio_tv_votes_detected(radio_text):
+        return
+    today_iso = date.today().isoformat()
+    today_label = fmt_date(date.today())
+    if parsed_vote_times and not schedule_context.get("vote_block"):
+        schedule_context["vote_block"] = {
+            "date": today_iso,
+            "date_label": today_label,
+            "time": parsed_vote_times[0],
+            "time_label": parsed_vote_times[0],
+            "raw_time_text": parsed_vote_times[0],
+            "roll_call_votes_expected": None,
+            "source": "Radio-TV Gallery",
+        }
+        schedule_context["vote_block_time_label"] = parsed_vote_times[0]
+        schedule_context["normalized_vote_block_time"] = parsed_vote_times[0]
+        schedule_context["vote_block_display_time"] = parsed_vote_times[0]
+        schedule_context["vote_block_time_source"] = "radio_tv_hash_refresh"
+        schedule_context["vote_block_extraction_method"] = "radio_tv_vote_detection"
+    schedule_context["floorStatus"] = "expected_today"
+    schedule_context["floor_status"] = "expected_today"
+    schedule_context["chamberState"] = "expected_votes_today"
+    schedule_context["chamber_state"] = "expected_votes_today"
+    schedule_context["votes_detected"] = True
+    schedule_context["parsedVoteTimes"] = parsed_vote_times
+    schedule_context["source_label"] = "Senate Radio-TV Gallery"
+    schedule_context["source_name"] = "radio_tv"
+    schedule_context["source_url"] = RADIO_TV_URL
 
 
 def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
@@ -2965,6 +3046,11 @@ def build_forward_schedule_context() -> Dict[str, Any]:
         "executive_calendar": 5,
     }
     ordered_texts = sorted(payload["texts"], key=lambda x: source_priority.get(x.get("key", ""), 99))
+    radio_tv = _radio_tv_payload_diagnostics(ordered_texts)
+    radio_text = radio_tv.get("text", "")
+    radio_tv_hash_changed = bool(radio_tv.get("hash_changed"))
+    parsed_vote_times = _extract_radio_tv_vote_times(radio_text)
+    radio_votes_detected = _radio_tv_votes_detected(radio_text)
     merged = " ".join(x["text"] for x in ordered_texts)
     explicit_source = next((x for x in ordered_texts if re.search(r"roll call votes? expected|series of two votes|motion to invoke cloture|S\.Res\.?690|Warsh|will next convene", x.get("text", ""), flags=re.I)), None)
     suppressed_competing_sources: List[str] = []
@@ -2979,11 +3065,17 @@ def build_forward_schedule_context() -> Dict[str, Any]:
                 continue
             parts.append(sentence)
         merged = " ".join(parts)
+    floor_state_before = (LAST_FORWARD_SCHEDULE_DEBUG.get("schedule_context", {}) or {}).get("floorStatus") or (LAST_FORWARD_SCHEDULE_DEBUG.get("operational_floor_state") or "unknown")
     schedule_context = parse_forward_floor_schedule(merged, date.today() - timedelta(days=14))
+    if radio_tv_hash_changed:
+        schedule_context["floor_watch_cache_invalidated"] = True
+    if radio_votes_detected:
+        _force_radio_tv_expected_today(schedule_context, radio_text, parsed_vote_times)
+    floor_state_after = schedule_context.get("floorStatus") or ("expected_today" if (schedule_context.get("vote_block") or schedule_context.get("expected_votes")) else "inactive")
     schedule_context.setdefault("active_windows", [])
     schedule_context.setdefault("upcoming_windows", [])
     schedule_context.setdefault("expired_windows", [])
-    if explicit_source:
+    if explicit_source and not radio_votes_detected:
         schedule_context["source_label"] = "Senate Daily Press Gallery" if explicit_source.get("key") == "daily_press" else explicit_source.get("key", "Public Senate schedule")
         schedule_context["source_name"] = explicit_source.get("key", "")
         schedule_context["source_url"] = explicit_source.get("url", "")
@@ -2991,6 +3083,12 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     schedule_context["confidence"] = "high" if (schedule_context.get("vote_block") or schedule_context.get("expected_votes")) else "medium"
     schedule_context["why_selected"] = "Explicit public schedule/vote text outranks generic floor-update fallback." if explicit_source else "No explicit vote source found; using best available public schedule text."
     schedule_context["suppressed_competing_sources"] = suppressed_competing_sources[:10]
+    schedule_context["radioTvHashChanged"] = radio_tv_hash_changed
+    schedule_context["votesDetected"] = radio_votes_detected
+    schedule_context["voteCount"] = len(schedule_context.get("expected_votes") or []) or (schedule_context.get("vote_block") or {}).get("roll_call_votes_expected") or (1 if radio_votes_detected else 0)
+    schedule_context["parsedVoteTimes"] = parsed_vote_times
+    schedule_context["floorStateBefore"] = floor_state_before
+    schedule_context["floorStateAfter"] = floor_state_after
     before_canonicalization = schedule_context.get("vote_block_time_label", "")
     canonical_time = canonical_vote_block_time(schedule_context) if schedule_context.get("vote_block") else ""
     schedule_context["vote_block_time_label"] = canonical_time
@@ -3021,7 +3119,22 @@ def build_forward_schedule_context() -> Dict[str, Any]:
         "vote_block_time_renderer_used": schedule_context.get("vote_block_time_renderer_used", ""),
         "vote_block_extraction_method": schedule_context.get("vote_block_extraction_method", ""),
         "parsed_expected_votes": schedule_context.get("expected_votes", []),
+        "radioTvHashChanged": radio_tv_hash_changed,
+        "votesDetected": radio_votes_detected,
+        "voteCount": schedule_context.get("voteCount", 0),
+        "parsedVoteTimes": parsed_vote_times,
+        "floorStateBefore": floor_state_before,
+        "floorStateAfter": floor_state_after,
     }
+    logger.debug(
+        "floor watch recompute radioTvHashChanged=%s votesDetected=%s voteCount=%s parsedVoteTimes=%s floorStateBefore=%s floorStateAfter=%s",
+        radio_tv_hash_changed,
+        radio_votes_detected,
+        schedule_context.get("voteCount", 0),
+        parsed_vote_times,
+        floor_state_before,
+        floor_state_after,
+    )
     return LAST_FORWARD_SCHEDULE_DEBUG
 
 
@@ -3835,6 +3948,7 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
     active_pro_forma = next((w for w in active_windows if w.get("window_type") == "pro_forma"), None)
     upcoming_vote = vote_block if _window_is_upcoming(vote_block) else next((w for w in upcoming_windows if w.get("window_type") == "vote_block"), {})
     upcoming_convening = next_convening if _window_is_upcoming(next_convening) else next((w for w in upcoming_windows if w.get("window_type") == "next_convening"), {})
+    expected_today = context.get("floorStatus") == "expected_today" or context.get("floor_status") == "expected_today"
     completed_pro_forma_today = False
     if now:
         for window in expired_windows:
@@ -3847,6 +3961,18 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
             except ValueError:
                 completed_pro_forma_today = window.get("date") == now.date().isoformat()
 
+    if expected_today and (vote_block or expected_votes):
+        vote_time = canonical_vote_block_time(context) or (vote_block or {}).get("time_label") or "Timing pending"
+        return {
+            "state": "EXPECTED_TODAY",
+            "status": "No active floor coverage",
+            "floorStatus": "expected_today",
+            "location": "Stand by: Expected floor activity later today",
+            "timing": f"Roll call votes expected today; {vote_time}.",
+            "watch": "Roll call timing · Leadership traffic · Vote sequencing",
+            "why": "Radio-TV Gallery schedule indicates roll call votes expected.",
+            "guidance": "Do not treat today as inactive while expected vote language remains posted.",
+        }
     if confirmed_floor_activity:
         return {
             "state": "ACTIVE_SESSION",
