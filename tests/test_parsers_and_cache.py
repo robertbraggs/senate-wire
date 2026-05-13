@@ -439,3 +439,67 @@ def test_active_session_requires_trusted_floor_confirmation():
     assert confirmed["state"] == "ACTIVE_SESSION"
     assert confirmed["status"] == "Floor active"
     assert confirmed["location"] == "Senate chamber / leadership area"
+
+
+def test_radio_tv_hash_change_invalidates_floor_watch_and_forces_expected_today(monkeypatch):
+    from app.source_cache import upsert_source_success
+
+    upsert_source_success("radio_tv", {"text": "Senate inactive. No announced vote window."})
+    radio_text = """
+    Senate Floor Schedule
+    Roll call votes expected
+    At approximately 2:15 p.m., roll call votes expected.
+    - Motion to invoke cloture on Executive Calendar #900 Jane Doe nomination.
+    """
+    upsert_source_success("radio_tv", {"text": radio_text})
+
+    monkeypatch.setattr(main, "fetch_forward_schedule_sources", lambda: {
+        "loaded_sources": [{"key": "radio_tv", "url": main.RADIO_TV_URL}],
+        "texts": [{"key": "radio_tv", "url": main.RADIO_TV_URL, "text": radio_text}],
+        "errors": {},
+    })
+    main.LAST_FORWARD_SCHEDULE_DEBUG = {"schedule_context": {"floorStatus": "inactive"}}
+
+    debug = main.build_forward_schedule_context()
+    parsed = debug["parsed_forward_schedule"]
+
+    assert parsed["radioTvHashChanged"] is True
+    assert parsed["floor_watch_cache_invalidated"] is True
+    assert parsed["votesDetected"] is True
+    assert parsed["floorStatus"] == "expected_today"
+    assert parsed["floorStateBefore"] == "inactive"
+    assert parsed["floorStateAfter"] == "expected_today"
+    assert parsed["voteCount"] >= 1
+    assert parsed["parsedVoteTimes"] == ["approx. 2:15 p.m."]
+    assert parsed["vote_block"]["time_label"] == "approx. 2:15 p.m."
+
+    status = main.homepage_operational_status(parsed, [], datetime.combine(date.today(), datetime.min.time()))
+    assert status["floorStatus"] == "expected_today"
+    assert status["state"] == "EXPECTED_TODAY"
+    assert status["status"] != "Senate inactive"
+
+
+def test_radio_tv_vote_detection_recomputes_from_latest_payload_without_prior_inactive(monkeypatch):
+    radio_text = "Roll call votes expected at approximately 4:30 p.m."
+    monkeypatch.setattr(main, "get_source_snapshot", lambda source_name: {
+        "payload": {
+            "text": radio_text,
+            "content_hash": "latest",
+            "previous_content_hash": "latest",
+            "hash_changed": False,
+        }
+    } if source_name == "radio_tv" else None)
+    monkeypatch.setattr(main, "fetch_forward_schedule_sources", lambda: {
+        "loaded_sources": [{"key": "radio_tv", "url": main.RADIO_TV_URL}],
+        "texts": [{"key": "radio_tv", "url": main.RADIO_TV_URL, "text": radio_text}],
+        "errors": {},
+    })
+    main.LAST_FORWARD_SCHEDULE_DEBUG = {"schedule_context": {"floorStatus": "inactive"}}
+
+    parsed = main.build_forward_schedule_context()["parsed_forward_schedule"]
+
+    assert parsed["radioTvHashChanged"] is False
+    assert parsed["votesDetected"] is True
+    assert parsed["floorStatus"] == "expected_today"
+    assert parsed["floorStateAfter"] == "expected_today"
+    assert parsed["vote_block"]["time_label"] == "approx. 4:30 p.m."

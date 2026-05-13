@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
@@ -22,12 +23,25 @@ def _decode_payload(raw: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
+def _payload_hash(payload: Dict[str, Any]) -> str:
+    text = payload.get("text")
+    raw = text if isinstance(text, str) else json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
 def upsert_source_success(source_name: str, payload: Dict[str, Any], fetched_at: Optional[datetime] = None) -> None:
     fetched_at = fetched_at or utcnow()
     db = SessionLocal()
     try:
         row = db.query(CachedSource).filter_by(source_name=source_name).first()
-        encoded = json.dumps(sanitize_payload(payload), sort_keys=True, default=str)
+        previous_payload = _decode_payload(row.payload_json) if row else {}
+        content_hash = _payload_hash(payload)
+        previous_hash = previous_payload.get("content_hash") or (_payload_hash(previous_payload) if previous_payload else "")
+        enriched_payload = dict(payload)
+        enriched_payload["content_hash"] = content_hash
+        enriched_payload["previous_content_hash"] = previous_hash
+        enriched_payload["hash_changed"] = bool(previous_hash and previous_hash != content_hash)
+        encoded = json.dumps(sanitize_payload(enriched_payload), sort_keys=True, default=str)
         if not row:
             row = CachedSource(source_name=source_name)
             db.add(row)
