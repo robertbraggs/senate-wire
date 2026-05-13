@@ -2979,7 +2979,10 @@ def build_forward_schedule_context() -> Dict[str, Any]:
                 continue
             parts.append(sentence)
         merged = " ".join(parts)
-    schedule_context = parse_forward_floor_schedule(merged, date.today(), datetime.now())
+    schedule_context = parse_forward_floor_schedule(merged, date.today() - timedelta(days=14))
+    schedule_context.setdefault("active_windows", [])
+    schedule_context.setdefault("upcoming_windows", [])
+    schedule_context.setdefault("expired_windows", [])
     if explicit_source:
         schedule_context["source_label"] = "Senate Daily Press Gallery" if explicit_source.get("key") == "daily_press" else explicit_source.get("key", "Public Senate schedule")
         schedule_context["source_name"] = explicit_source.get("key", "")
@@ -3805,6 +3808,17 @@ def _same_day_window(window: Dict[str, Any], now: Optional[datetime]) -> bool:
     return (window.get("date") or "") == now.date().isoformat()
 
 
+def _same_day_expected_action(schedule_context: Dict[str, Any], now: Optional[datetime]) -> bool:
+    if not now:
+        return bool((schedule_context or {}).get("expected_votes"))
+    context = schedule_context or {}
+    windows = [context.get("vote_block") or {}, context.get("next_convening") or {}]
+    windows.extend(context.get("upcoming_windows") or [])
+    if any(_same_day_window(window, now) for window in windows if window):
+        return True
+    return bool(context.get("expected_votes") and not any(window.get("date") for window in windows if window))
+
+
 def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signals: List[JoltItem], now: Optional[datetime] = None) -> Dict[str, str]:
     """Translate procedural windows into current press-logistics status copy."""
     context = schedule_context or {}
@@ -3846,21 +3860,20 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
     if active_vote:
         return {
             "state": "ACTIVE_FLOOR_COVERAGE_WINDOW",
-            "status": "Vote window current",
-            "location": "Floor / chamber area",
-            "timing": "Confirm roll call start.",
-            "watch": "Roll call start and leadership movement",
+            "status": "Floor active",
+            "location": "Senate floor / chamber",
+            "timing": "Be: Senate floor / chamber",
+            "watch": "Roll call timing · Leadership traffic · Vote sequencing",
             "why": "",
             "guidance": "",
         }
     if active_convening and _same_day_window(active_convening, now):
-        label = active_convening.get("time_label") or active_convening.get("time") or "time pending"
         return {
             "state": "AWAITING_FLOOR_CONFIRMATION",
-            "status": "Status: Awaiting floor convening",
-            "location": "Floor / chamber area",
-            "timing": f"Gavel was scheduled for {label}; wait for floor confirmation.",
-            "watch": "Leadership remarks and vote timing",
+            "status": "No active floor coverage",
+            "location": "Stand by: Expected floor activity later today",
+            "timing": "Timing TBD",
+            "watch": "Leadership / chamber movement",
             "why": "",
             "guidance": "",
         }
@@ -3888,11 +3901,21 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
                 "why": "",
                 "guidance": "",
             }
+        if _same_day_expected_action(context, now):
+            return {
+                "state": "UPCOMING_SESSION",
+                "status": "No active floor coverage",
+                "location": "Stand by: Expected floor activity later today",
+                "timing": "Timing TBD",
+                "watch": "Leadership / chamber movement",
+                "why": "",
+                "guidance": "",
+            }
         return {
             "state": "UPCOMING_SESSION",
             "status": "No active floor coverage",
-            "location": "Floor / chamber area",
-            "timing": f"Next: vote block {vote_date} at {vote_time}.",
+            "location": "No active floor coverage",
+            "timing": f"Expected: vote block {vote_date} at {vote_time}.",
             "watch": "Scheduled votes",
             "why": "",
             "guidance": "",
@@ -3903,18 +3926,28 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
         if upcoming_convening and _same_day_window(upcoming_convening, now):
             return {
                 "state": "PRE_CONVENING",
-                "status": "Status: Senate not yet in session",
-                "location": "Floor / chamber area",
-                "timing": f"Convenes {convene_time}.",
-                "watch": "Leadership remarks and vote timing",
+                "status": "No active floor coverage",
+                "location": "Stand by: Expected floor activity later today",
+                "timing": "Timing TBD",
+                "watch": "Leadership / chamber movement",
+                "why": "",
+                "guidance": "",
+            }
+        if _same_day_expected_action(context, now):
+            return {
+                "state": "UPCOMING_SESSION",
+                "status": "No active floor coverage",
+                "location": "Stand by: Expected floor activity later today",
+                "timing": "Timing TBD",
+                "watch": "Leadership / chamber movement",
                 "why": "",
                 "guidance": "",
             }
         return {
             "state": "UPCOMING_SESSION",
             "status": "No active floor coverage",
-            "location": "Floor / chamber area",
-            "timing": f"Next: floor convenes {convene_date} at {convene_time}.",
+            "location": "No active floor coverage",
+            "timing": f"Expected: floor convenes {convene_date} at {convene_time}.",
             "watch": "Floor opening and vote timing",
             "why": "",
             "guidance": "",
@@ -3931,10 +3964,10 @@ def homepage_operational_status(schedule_context: Dict[str, Any], coverage_signa
         }
     return {
         "state": "LOW_ACTIVITY_PERIOD",
-        "status": "Status: Senate out of active floor session",
+        "status": "Senate inactive",
         "location": "No active floor coverage",
-        "timing": "No active floor coverage window",
-        "watch": "Next floor or vote update",
+        "timing": "",
+        "watch": "",
         "why": "",
         "guidance": "",
     }
@@ -4513,6 +4546,113 @@ def apply_no_store_headers(response: Optional[Response]) -> None:
         response.headers[key] = value
 
 
+def render_now_board(status: Dict[str, str]) -> str:
+    raw_status = status.get("status") or "Senate inactive"
+    state = status.get("state", "")
+    if raw_status.startswith("Status: Senate out") or state in {"COMPLETED_SESSION", "LOW_ACTIVITY_PERIOD"}:
+        display_status = "Senate inactive"
+    elif raw_status.startswith("Status: Senate not") or raw_status.startswith("Status: Awaiting"):
+        display_status = "No active floor coverage"
+    else:
+        display_status = raw_status
+
+    rows = [f"<div class='now-status'>{html.escape(display_status)}</div>"]
+    if state in {"ACTIVE_SESSION", "ACTIVE_FLOOR_COVERAGE_WINDOW"}:
+        rows.append("<div><b>Be:</b> Senate floor / chamber</div>")
+        rows.append("<div><b>Watch:</b> Roll call timing · Leadership traffic · Vote sequencing</div>")
+    elif display_status == "No active floor coverage":
+        rows.append("<div><b>Stand by:</b> Expected floor activity later today</div>")
+        rows.append("<div><b>Timing:</b> TBD</div>")
+        rows.append("<div><b>Watch:</b> Leadership / chamber movement</div>")
+    return f"<section class='now-board' data-refresh-key='where-to-be-now'><div class='eyebrow'>NOW</div>{''.join(rows)}</section>"
+
+
+def _floor_watch_title(item: JoltItem) -> str:
+    title = clean(item.title or item.raw or "Expected floor action").rstrip(".")
+    title = re.sub(r"^(Cloture|Adoption|Vote)\s+—\s+", "", title, flags=re.I)
+    if "executive calendar #" in title.lower():
+        m = re.search(r"(Executive Calendar\s+#\d+[^.;]*)", title, flags=re.I)
+        if m:
+            title = m.group(1)
+    return title[:110]
+
+
+def render_floor_watch(signals: List[JoltItem], schedule_context: Dict[str, Any], now: datetime) -> str:
+    floor_signals = [s for s in signals if s.signal_type != "committee_hearing_window"]
+    floor_signals = sorted(floor_signals, key=lambda s: s.signal_score, reverse=True)[:3]
+    if not floor_signals:
+        return "<section class='section compact-section' data-refresh-key='floor-watch'><h2>FLOOR WATCH</h2><p class='empty compact-empty'>No announced vote window</p></section>"
+
+    rows = []
+    for item in floor_signals:
+        label = "Expected today" if item.sort_datetime and item.sort_datetime[:10] == now.date().isoformat() else "Expected"
+        if item.date_label and label == "Expected":
+            label = f"Expected {fmt_short_date_label(item.date_label)}"
+        timing = item.time_label or canonical_vote_block_time(schedule_context) or "TBD"
+        if item.signal_type == "convening_window" and len(floor_signals) > 1:
+            continue
+        rows.append(f"""
+        <div class='board-row floor-row'>
+            <span class='signal-dot'>🟡</span>
+            <div><strong>{html.escape(_floor_watch_title(item))}</strong><span>{html.escape(label)}</span></div>
+            <em>{html.escape(timing or 'TBD')}</em>
+        </div>
+        """)
+        if len(rows) == 3:
+            break
+    status = "No announced vote window" if not (schedule_context or {}).get("vote_block") else "Vote timing posted" if canonical_vote_block_time(schedule_context) else "No announced vote window"
+    return f"<section class='section compact-section' data-refresh-key='floor-watch'><h2>FLOOR WATCH</h2>{''.join(rows) or '<p class=\'empty compact-empty\'>No announced vote window</p>'}<div class='board-status'><b>Status:</b> {html.escape(status)}</div></section>"
+
+
+def _committee_time(item: JoltItem) -> Optional[datetime]:
+    return parse_item_datetime(item)
+
+
+def room_checkpoint_items(items: List[JoltItem], now: datetime) -> Tuple[List[JoltItem], int]:
+    hearings = [item for item in items if is_well_formed_committee_item(item)]
+    window_start = now.replace(minute=0, second=0, microsecond=0)
+    window_end = window_start + timedelta(hours=2)
+    current = []
+    for item in hearings:
+        dt = _committee_time(item)
+        if not dt:
+            continue
+        if window_start <= dt <= window_end:
+            current.append(item)
+    current.sort(key=lambda item: item.sort_datetime or "9999")
+    return current[:8], len(hearings)
+
+
+def render_room_checkpoints(items: List[JoltItem], now: datetime) -> str:
+    checkpoints, total = room_checkpoint_items(items, now)
+    if not checkpoints:
+        footer = f"<div class='collapsed-footer'>See all hearings ({total})</div>" if total else ""
+        return f"<section class='section compact-section' data-refresh-key='room-checkpoints'><h2>ROOM CHECKPOINTS</h2><p class='empty compact-empty'>No room checkpoints in next 2 hours</p>{footer}</section>"
+    rows = []
+    for item in checkpoints:
+        committee = concise_committee_name(item.committee) or concise_committee_name(item.title) or "Committee"
+        room = filter_global_boilerplate(item.location) or "Room TBD"
+        time_label = item.time_label or (parse_item_datetime(item).strftime("%-I:%M") if parse_item_datetime(item) else "TBD")
+        link = html.escape(item.url or COMMITTEE_SCHEDULE_URL)
+        rows.append(f"<a class='board-row room-row' href='{link}' target='_blank' rel='noopener'><time>{html.escape(time_label)}</time><strong>{html.escape(committee)}</strong><span>{html.escape(room)}</span></a>")
+    footer = f"<div class='collapsed-footer'>See all hearings ({total})</div>" if total else ""
+    return f"<section class='section compact-section' data-refresh-key='room-checkpoints'><h2>ROOM CHECKPOINTS</h2>{''.join(rows)}{footer}</section>"
+
+
+def render_full_hearings_collapsed(items: List[JoltItem], view: str) -> str:
+    visible = [item for item in items if is_well_formed_committee_item(item)]
+    if not visible:
+        return '<div hidden data-refresh-key="full-hearings"></div>'
+    rows = []
+    for item in visible:
+        committee = concise_committee_name(item.committee) or "Committee"
+        room = filter_global_boilerplate(item.location) or "Room TBD"
+        time_label = item.time_label or "TBD"
+        url = html.escape(item.url or COMMITTEE_SCHEDULE_URL)
+        rows.append(f"<a class='board-row room-row' href='{url}' target='_blank' rel='noopener'><time>{html.escape(time_label)}</time><strong>{html.escape(committee)}</strong><span>{html.escape(room)}</span></a>")
+    return f"<section class='section compact-section' data-refresh-key='full-hearings'><details><summary><h2>Full hearings ({len(visible)})</h2></summary>{''.join(rows)}</details></section>"
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
@@ -4545,6 +4685,9 @@ def dashboard(
         signals = to_signal_items(items) if items else []
         top_signal = signals[0] if signals else None
         schedule_context = (forward_context.get("schedule_context", {}) if forward_context else {})
+        schedule_context = apply_schedule_window_lifecycle(schedule_context, now) if schedule_context else {}
+        if forward_context:
+            forward_context["schedule_context"] = schedule_context
         expected_votes = schedule_context.get("expected_votes", []) if schedule_context else []
         current_coverage_signals = build_coverage_signal_items(groups, schedule_context, now)
         signal_reasons = [item.title for item in current_coverage_signals]
@@ -4580,6 +4723,10 @@ def dashboard(
         notification_events_json = html.escape(json.dumps([asdict(event) for event in notification_events]), quote=False)
         alert_banner = render_alert_banner(alert_signals)
         live_vote_mode = render_live_vote_mode(items, forward_context, now)
+        now_board = render_now_board(operational_status)
+        floor_watch = render_floor_watch(current_coverage_signals, schedule_context, now)
+        room_checkpoints = render_room_checkpoints(groups.get("Committee Meetings & Hearings", []), now)
+        full_hearings = render_full_hearings_collapsed(groups.get("Committee Meetings & Hearings", []), view)
         last_updated_iso = now.isoformat(timespec="seconds")
         last_updated_label = now.strftime("%I:%M:%S %p").lstrip("0")
 
@@ -4831,6 +4978,19 @@ def dashboard(
                 .offline-warning {{ margin-bottom: 12px; padding: 12px 14px; background: var(--color-light-background); border: 1px solid var(--color-border-gray); border-radius: 14px; color: var(--color-text-muted); font-weight: 700; }}
                 main {{ scroll-margin-top: 90px; }}
                 .ticker {{ font-size: 18px; line-height: 1.55; }}
+                .now-board {{ margin-bottom: 10px; padding: 14px 16px; background: var(--color-card-background); border: 1px solid var(--color-border-gray); border-radius: 14px; box-shadow: 0 2px 8px rgba(15,23,42,.07); line-height: 1.35; }}
+                .eyebrow {{ color: var(--color-primary-navy); font-size: 12px; font-weight: 900; letter-spacing: .12em; }}
+                .now-status {{ margin: 3px 0 6px; font-size: 24px; font-weight: 900; color: var(--color-deep-senate-navy); }}
+                .compact-section {{ margin: 12px 0; }}
+                .compact-section h2 {{ margin: 0 0 6px; padding-bottom: 5px; font-size: 16px; letter-spacing: .08em; }}
+                .board-row {{ display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; min-height: 34px; padding: 7px 0; border-bottom: 1px solid var(--color-border-gray); color: var(--color-text-primary); text-decoration: none; }}
+                .board-row strong {{ font-size: 15px; }}
+                .board-row span, .board-row em {{ color: var(--color-text-muted); font-size: 13px; font-style: normal; }}
+                .floor-row div span {{ display: block; margin-top: 2px; }}
+                .room-row {{ grid-template-columns: 58px 1fr 74px; }}
+                .room-row time {{ color: var(--color-deep-senate-navy); font-weight: 900; font-variant-numeric: tabular-nums; }}
+                .board-status, .collapsed-footer {{ padding-top: 8px; color: var(--color-text-muted); font-size: 13px; font-weight: 700; }}
+                .compact-empty {{ padding: 9px 10px; margin: 0; }}
                 .section {{ margin-top: 18px; }}
                 .card, .stat, .outlook, .links, .ticker, .empty {{ overflow-wrap: anywhere; }}
                 .summary, .topgrid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
@@ -4872,6 +5032,10 @@ def dashboard(
                     h2 {{ font-size: 21px; }}
                     .sub {{ font-size: 14px; }}
                     .ticker, .outlook, .card, .stat, .links, .empty {{ border-radius: 16px; padding: 14px; }}
+                    .now-board {{ padding: 12px; }}
+                    .now-status {{ font-size: 22px; }}
+                    .compact-section {{ margin: 10px 0; }}
+                    .room-row {{ grid-template-columns: 52px 1fr 66px; }}
                     .summary, .topgrid {{ grid-template-columns: 1fr; }}
                         .button {{ flex: 1 1 130px; }}
                 }}
@@ -4912,23 +5076,13 @@ def dashboard(
             <main id="main-content">
                 {live_vote_mode}
                 <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
-                <div class="ticker" data-refresh-key="where-to-be-now">
-                    <strong>NOW</strong><br>{html.escape(ticker_status)}<br>{html.escape(ticker_location)}<br><br><strong>Next:</strong><br>{html.escape(coverage_timing)}<br><br><strong>Watch:</strong><br>{html.escape(watch_list)}</div>
-
-                {render_signal_summary(signal_reasons, len(groups.get("Votes", [])), signal_scope)}
-
-                <section class="section" data-refresh-key="next-expected-floor-action"><h2>Next Expected Floor Coverage Window</h2><!-- forward schedule renderer fixed -->{render_next_expected_floor_action(build_next_expected_floor_action(items), forward_context)}</section>
-
-                {'<div hidden data-refresh-key="top-actions"></div>' if current_coverage_signals else f'<section class="section" data-refresh-key="top-actions"><h2>Press Logistics Focus</h2>{"".join(f"<div class='card'><p>{html.escape(a)}</p></div>" for a in top_actions(main_items, forward_context)) if top_actions(main_items, forward_context) else "<p class='empty'>Monitor. No active vote, event, or hearing coverage window detected.</p>"}</section>'}
-
-                {section("Senate Floor Activity", groups.get("Schedule", []), view, hide_empty=True)}
-                {render_key_votes_section(groups.get("Votes", []), forward_context, view)}
-                {'' if expected_votes else f'<section class="section" data-refresh-key="forward-look-legislation-nominations"><h2>Upcoming Vote / Floor Coverage Windows</h2>{render_forward_look(items, build_next_expected_floor_action(items), forward_context)}</section>'}
+                {now_board}
+                {floor_watch}
+                {room_checkpoints}
+                {section("Floor Remarks", floor_remarks_items, view, collapsed=True, hide_empty=True)}
+                {full_hearings}
                 {section("News Events & Stakeouts", groups.get("Events", []), view, hide_empty=True)}
                 {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view) if groups.get("House / Joint Coverage Notes", []) else ""}
-                {section("Committee Meetings & Hearings", groups.get("Committee Meetings & Hearings", []), view, hide_empty=True)}
-                {section("Floor Remarks", floor_remarks_items, view, collapsed=True, hide_empty=True)}
-                {section("Current Coverage Signals", current_coverage_signals, view, collapsed=True, hide_empty=True)}
                 {render_material_context_section(material_context, view) if material_context else ""}
 
                 <section class="signup-card" aria-labelledby="alerts-signup-heading">
