@@ -20,6 +20,24 @@ from app.source_cache import get_source_snapshot, upsert_source_failure, upsert_
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+class _PinnedDate(date):
+    """Pin 'today' to the fixture era (May 2026).
+
+    Several forward-schedule tests use fixtures dated May 11, 2026.
+    parse_forward_floor_schedule() drops dates outside its forward window,
+    so these tests go stale as real time moves on. Pinning app.main's
+    date.today() keeps them deterministic without touching the parser.
+    """
+
+    @classmethod
+    def today(cls):
+        return cls(2026, 5, 11)
+
+
+def _pin_fixture_era(monkeypatch):
+    monkeypatch.setattr("app.main.date", _PinnedDate)
+
+
 def fixture_text(name: str) -> str:
     return (FIXTURES / name).read_text()
 
@@ -264,6 +282,7 @@ def test_known_expected_vote_block_is_preserved_from_expected_vote_list():
 
 
 def test_generic_floor_update_cannot_overwrite_specific_schedule_data(monkeypatch):
+    _pin_fixture_era(monkeypatch)
     specific = {
         "key": "senate_dems_schedule",
         "url": "fixture://specific",
@@ -315,6 +334,7 @@ def test_daily_press_gallery_may_11_series_of_two_votes_source_truth():
 
 
 def test_generic_no_vote_and_floor_update_suppressed_by_specific_daily_press(monkeypatch):
+    _pin_fixture_era(monkeypatch)
     specific = {
         "key": "daily_press",
         "url": "fixture://daily-press",

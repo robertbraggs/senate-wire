@@ -1,0 +1,7 @@
+.git
+__pycache__
+*.pyc
+data/
+.DS_Store
+tests/
+uvicorn app.main:app --reload

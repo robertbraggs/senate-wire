@@ -78,6 +78,8 @@ class SourceRefreshManager:
         self.circuit_reset_seconds = _env_int("SOURCE_CIRCUIT_RESET_SECONDS", 900)
         self.disabled = os.getenv("DISABLE_SOURCE_REFRESHER", "").lower() in {"1", "true", "yes"}
         self.congress_enrichment_limit = _env_int("CONGRESS_ENRICHMENT_BILL_LIMIT", 20)
+        self._last_prune: Optional[datetime] = None
+        self.prune_after_days = _env_int("ALERT_PRUNE_AFTER_DAYS", 30)
 
     async def start(self) -> None:
         if self.disabled or self._task:
@@ -99,7 +101,21 @@ class SourceRefreshManager:
     async def _run(self) -> None:
         while True:
             await self.refresh_due_sources()
+            await self._maybe_prune_alerts()
             await asyncio.sleep(5)
+
+    async def _maybe_prune_alerts(self) -> None:
+        now = datetime.utcnow()
+        if self._last_prune and now - self._last_prune < timedelta(hours=1):
+            return
+        self._last_prune = now
+        try:
+            from app.alerts import prune_old_alert_events
+            pruned = prune_old_alert_events(older_than_days=self.prune_after_days)
+            if pruned:
+                print(f"[prune] removed {pruned} old alert events")
+        except Exception as exc:  # pruning must never break the refresh loop
+            print(f"[prune] failed: {exc}")
 
     async def refresh_due_sources(self) -> None:
         now = datetime.utcnow()
@@ -154,10 +170,18 @@ class SourceRefreshManager:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
             response = await client.get(source.url, params=source.params or None)
             response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            # Binary payloads (e.g. the executive-calendar PDF) decode to
+            # megabytes of mojibake that no parser can use and that bloat the
+            # snapshot store. Keep the metadata, skip the body.
+            if content_type and not any(t in content_type.lower() for t in ("text/", "json", "xml")):
+                body = f"[binary content skipped: {content_type}]"
+            else:
+                body = response.text
             return {
                 "url": sanitize_url(source.url),
-                "text": response.text,
-                "content_type": response.headers.get("content-type", ""),
+                "text": body,
+                "content_type": content_type,
                 "http_status": response.status_code,
             }
 

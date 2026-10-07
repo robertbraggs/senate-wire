@@ -11,6 +11,7 @@ from email.message import EmailMessage
 from typing import Any, Dict, Iterable, Optional
 
 from app.database import AlertEvent, SentAlert, SessionLocal, Subscriber
+from sqlalchemy import or_
 
 DEFAULT_ALERT_PREFERENCES = {
     "votes": True,
@@ -186,6 +187,34 @@ def preference_enabled(subscriber: Subscriber, coverage_type: str) -> bool:
     if coverage_type in {"cloture_filed"}:
         return bool(preferences.get("votes", True))
     return False
+
+
+def prune_old_alert_events(older_than_days: int = 30) -> int:
+    """Delete expired alert events and delivery records older than the cutoff.
+
+    AlertEvent rows accumulate forever (one per unique vote/hearing/schedule
+    signal). Without pruning, the table grows unbounded and drags memory on
+    small hosts. Expired events go first; anything older than the cutoff goes
+    regardless. Returns the number of AlertEvent rows removed.
+    """
+    from datetime import timedelta
+
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=older_than_days)
+    db = SessionLocal()
+    try:
+        stale_ids = [
+            row.id for row in
+            db.query(AlertEvent.id).filter(or_(AlertEvent.expires_at < now, AlertEvent.created_at < cutoff)).all()
+        ]
+        if stale_ids:
+            db.query(SentAlert).filter(SentAlert.alert_id.in_(stale_ids)).delete(synchronize_session=False)
+            n = db.query(AlertEvent).filter(AlertEvent.id.in_(stale_ids)).delete(synchronize_session=False)
+            db.commit()
+            return n
+        return 0
+    finally:
+        db.close()
 
 
 def event_from_notification(notification: Any) -> AlertEvent:
