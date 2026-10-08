@@ -20,6 +20,7 @@ class SourceConfig:
     interval_seconds: int
     timeout_seconds: float
     params: Dict[str, str] = field(default_factory=dict)
+    kind: str = "text"  # "text" | "senate_calendar_pdf"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -61,6 +62,15 @@ def default_source_configs() -> list[SourceConfig]:
         env_name = f"SOURCE_{name.upper()}_REFRESH_INTERVAL_SECONDS"
         params = {"api_key": os.getenv("CONGRESS_API_KEY", ""), "format": "json"} if name.startswith("congress_") and os.getenv("CONGRESS_API_KEY") else {}
         configs.append(SourceConfig(name=name, url=url, interval_seconds=_env_int(env_name, intervals.get(name, default_interval)), timeout_seconds=timeout, params=params))
+    # Senate Calendar of Business (govinfo PDF): resolved dynamically to the
+    # latest published calendar; refreshed a few times per session day.
+    configs.append(SourceConfig(
+        name="senate_calendar",
+        url="",
+        interval_seconds=_env_int("SOURCE_SENATE_CALENDAR_REFRESH_INTERVAL_SECONDS", 21600),
+        timeout_seconds=timeout,
+        kind="senate_calendar_pdf",
+    ))
     return configs
 
 
@@ -165,6 +175,8 @@ class SourceRefreshManager:
         raise last_exc or RuntimeError("unknown fetch error")
 
     async def _fetch_once(self, source: SourceConfig) -> dict:
+        if source.kind == "senate_calendar_pdf":
+            return await self._fetch_senate_calendar(source)
         httpx = importlib.import_module("httpx")
         timeout = httpx.Timeout(source.timeout_seconds, connect=min(5.0, source.timeout_seconds))
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
@@ -184,6 +196,53 @@ class SourceRefreshManager:
                 "content_type": content_type,
                 "http_status": response.status_code,
             }
+
+
+    async def _fetch_senate_calendar(self, source: SourceConfig) -> dict:
+        """Fetch the latest Senate Calendar of Business PDF and extract its
+        Unanimous Consent Agreements section as text."""
+        from app.senate_calendar import (
+            DEFAULT_CONGRESS, calendar_url_for, extract_text_from_pdf, extract_uc_section,
+        )
+        congress = int(os.getenv("CURRENT_CONGRESS", str(DEFAULT_CONGRESS)) or DEFAULT_CONGRESS)
+        httpx = importlib.import_module("httpx")
+        timeout = httpx.Timeout(source.timeout_seconds, connect=min(5.0, source.timeout_seconds))
+
+        # Resolve latest calendar with real HEAD checks
+        resolved = None
+        from datetime import date as _date, timedelta as _td
+        today = _date.today()
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+            for offset in range(15):
+                day = today - _td(days=offset)
+                url = calendar_url_for(congress, day)
+                try:
+                    head = await client.head(url)
+                    if head.status_code == 200:
+                        resolved = (url, day.strftime("%Y-%m-%d"))
+                        break
+                except Exception:
+                    continue
+            if not resolved:
+                raise RuntimeError("no Senate calendar PDF found in last 15 days")
+            url, cal_date = resolved
+            response = await client.get(url)
+            response.raise_for_status()
+            pdf_bytes = response.content
+        try:
+            full_text = extract_text_from_pdf(pdf_bytes)
+        except Exception as exc:
+            raise RuntimeError(f"calendar PDF text extraction failed: {exc}")
+        uc_section = extract_uc_section(full_text)
+        if not uc_section:
+            raise RuntimeError("calendar PDF has no UC agreements section")
+        return {
+            "url": sanitize_url(url),
+            "text": uc_section[:20000],
+            "content_type": "application/pdf",
+            "http_status": 200,
+            "calendar_date": cal_date,
+        }
 
 
     def _congress_api_source_name(self, path: str) -> str:

@@ -307,6 +307,7 @@ SOURCE_STATUS = {
     "congress_api": "Congress.gov API disabled: missing CONGRESS_API_KEY" if not CONGRESS_API_KEY else "Congress.gov API loaded",
     "committee_schedule": "linked",
     "congressional_record": "linked/API available",
+    "senate_calendar": "not loaded",
 }
 LAST_FORWARD_SCHEDULE_DEBUG: Dict[str, Any] = {}
 
@@ -3285,6 +3286,24 @@ def build_forward_schedule_context() -> Dict[str, Any]:
     schedule_context["vote_block_time_before_canonicalization"] = before_canonicalization
     schedule_context["vote_block_time_after_canonicalization"] = canonical_time
     schedule_context["vote_block_time_renderer_used"] = "canonical_vote_block_time"
+    # Authoritative day's orders from the Senate Calendar of Business.
+    # UC agreements carry true dates: a vote ordered for November 9 is
+    # recorded with that date and never manufactured as "today".
+    calendar_orders = _calendar_orders_context()
+    if calendar_orders:
+        schedule_context["calendar_orders"] = calendar_orders
+        next_vote = calendar_orders.get("next_vote")
+        if next_vote and next_vote.get("is_today") and not schedule_context.get("vote_block"):
+            schedule_context["vote_block"] = {
+                "time_label": next_vote.get("time_label") or "Time TBD",
+                "date_label": next_vote.get("event_date"),
+                "measure": next_vote.get("measure"),
+                "action": next_vote.get("action"),
+                "roll_call_votes_expected": 1,
+            }
+            schedule_context["floorStatus"] = "expected_today"
+            schedule_context["vote_block_time_source"] = "senate_calendar"
+            schedule_context["vote_block_time_label"] = next_vote.get("time_label") or ""
     actions = extract_next_floor_actions(merged)
     vote_related = [a for a in actions if any(k in a["text"].lower() for k in ["vote", "cloture", "confirmation", "adoption"])]
     LAST_FORWARD_SCHEDULE_DEBUG = {
@@ -4910,10 +4929,61 @@ def _floor_watch_title(item: JoltItem) -> str:
     return title[:110]
 
 
+def _calendar_orders_context() -> Dict[str, Any]:
+    """Parse the Senate Calendar of Business UC agreements from the source cache.
+
+    Returns {orders, next_vote, calendar_date} or {}. The UC agreements carry
+    true dates, so a vote scheduled for November 9 is never reported as today.
+    """
+    try:
+        from app.senate_calendar import dated_vote_events, parse_uc_agreements, summarize_for_dashboard
+    except ImportError:
+        return {}
+    try:
+        text = get_source_text("senate_calendar")
+    except Exception:
+        return {}
+    if not text or len(text) < 100:
+        return {}
+    try:
+        agreements = parse_uc_agreements(text)
+        if not agreements:
+            return {}
+        events = dated_vote_events(agreements, today=et_today())
+        summary = summarize_for_dashboard(events, agreements)
+        snapshot = get_source_snapshot("senate_calendar") or {}
+        payload = snapshot.get("payload") or {}
+        summary["calendar_date"] = payload.get("calendar_date", "")
+        summary["calendar_url"] = payload.get("url", "")
+        return summary
+    except Exception:
+        return {}
+
+
 def render_floor_watch(signals: List[JoltItem], schedule_context: Dict[str, Any], now: datetime) -> str:
     floor_signals = [s for s in signals if s.signal_type != "committee_hearing_window"]
     floor_signals = sorted(floor_signals, key=lambda s: s.signal_score, reverse=True)[:3]
-    if not floor_signals:
+    # Day's orders from the Senate Calendar of Business (authoritative UC agreements)
+    orders_html = ""
+    calendar = (schedule_context or {}).get("calendar_orders") or {}
+    orders = calendar.get("orders") or []
+    next_vote = calendar.get("next_vote")
+    if next_vote:
+        try:
+            _d = date.fromisoformat(next_vote['event_date'])
+            _date_str = f"{next_vote['event_weekday']}, {_d.strftime('%B')} {_d.day}"
+        except Exception:
+            _date_str = f"{next_vote['event_weekday']}, {next_vote['event_date']}"
+        when = _date_str
+        if next_vote.get("time_label"):
+            when += f" at {next_vote['time_label']}"
+        orders_html += f"<div class='board-row floor-row'><span class='signal-dot'>🔵</span><div><strong>Next scheduled vote: {html.escape(next_vote['summary'])}</strong><span>{html.escape(when)}</span></div><em>Calendar of Business</em></div>"
+    for order in orders[:5]:
+        if next_vote and order["measure"] == next_vote["measure"]:
+            continue  # already shown as next vote
+        when = order.get("when") or "Date TBD"
+        orders_html += f"<div class='board-row floor-row'><span class='signal-dot'>⚪</span><div><strong>{html.escape(order['measure'])} — {html.escape(order['action'])}</strong><span>{html.escape(when)}</span></div><em>Order No. {html.escape(order['order_no'])}</em></div>"
+    if not floor_signals and not orders_html:
         return "<section class='section compact-section' data-refresh-key='floor-watch'><h2>SENATE FLOOR</h2><p class='empty compact-empty'>No announced vote window</p></section>"
 
     rows = []
@@ -4934,7 +5004,7 @@ def render_floor_watch(signals: List[JoltItem], schedule_context: Dict[str, Any]
         if len(rows) == 3:
             break
     status = "No announced vote window" if not (schedule_context or {}).get("vote_block") else "Vote timing posted" if canonical_vote_block_time(schedule_context) else "No announced vote window"
-    return f"<section class='section compact-section' data-refresh-key='floor-watch'><h2>SENATE FLOOR</h2>{''.join(rows) or '<p class=\'empty compact-empty\'>No announced vote window</p>'}<div class='board-status'><b>Status:</b> {html.escape(status)}</div></section>"
+    return f"<section class='section compact-section' data-refresh-key='floor-watch'><h2>SENATE FLOOR</h2>{orders_html}{''.join(rows) or ('<p class=\'empty compact-empty\'>No announced vote window</p>' if not orders_html else '')}<div class='board-status'><b>Status:</b> {html.escape(status)}</div></section>"
 
 
 def _committee_time(item: JoltItem) -> Optional[datetime]:
