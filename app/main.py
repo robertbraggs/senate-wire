@@ -607,7 +607,9 @@ def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
 def parse_forward_floor_schedule(text: str, today: date, now: Optional[datetime] = None) -> Dict[str, Any]:
     cleaned = clean(text or "")
     blocks = [clean(b) for b in re.split(r"\n{2,}", text or "") if clean(b)]
-    window_end = today + timedelta(days=14)
+    # 35-day window covers a full recess-to-return span (e.g. Oct 7 -> Nov 9).
+    # Pro formas during recess are the floor schedule; don't truncate them.
+    window_end = today + timedelta(days=35)
     rejected_blocks: List[str] = []
     ignored_dates: List[str] = []
 
