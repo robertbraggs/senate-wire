@@ -469,8 +469,13 @@ def _radio_tv_votes_detected(text: str) -> bool:
 def _force_radio_tv_expected_today(schedule_context: Dict[str, Any], radio_text: str, parsed_vote_times: List[str]) -> None:
     if not _radio_tv_votes_detected(radio_text):
         return
-    today_iso = date.today().isoformat()
-    today_label = fmt_date(date.today())
+    recess = detect_senate_recess(radio_text or "")
+    if recess and recess.get("in_recess"):
+        # Never manufacture a "today" vote block from a recess schedule.
+        schedule_context["senate_recess"] = recess
+        return
+    today_iso = et_today().isoformat()
+    today_label = fmt_date(et_today())
     if parsed_vote_times and not schedule_context.get("vote_block"):
         schedule_context["vote_block"] = {
             "date": today_iso,
@@ -1261,6 +1266,56 @@ def fmt_date(d: Optional[date]) -> Optional[str]:
     if not d:
         return None
     return d.strftime("%b %d")
+
+
+# All "today" logic for this DC press tool runs on Eastern Time, not server
+# (UTC) time.
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:
+    _ET = None
+
+
+def et_now() -> datetime:
+    now = datetime.now(_ET) if _ET else datetime.now()
+    return now.replace(tzinfo=None)
+
+
+def et_today() -> date:
+    return et_now().date()
+
+
+def detect_senate_recess(radio_tv_text: str) -> Optional[Dict[str, Any]]:
+    """Detect an explicit Senate recess statement in gallery text.
+
+    Returns {"in_recess": True, "return_date": date|None,
+    "return_label": str|None} or None when no recess statement is found.
+    """
+    if not radio_tv_text:
+        return None
+    if not re.search(r"The Senate stands in recess\b|Senate Recess Schedule", radio_tv_text, re.I):
+        return None
+    result: Dict[str, Any] = {"in_recess": True, "return_date": None, "return_label": None}
+    # "...will stand adjourned until 3:00pm on Monday, November 9."
+    m = re.search(
+        r"stand adjourned until\s+(?:\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)\s+)?on\s+([A-Z][a-z]+day,\s+([A-Z][a-z]+)\s+(\d{1,2}))",
+        radio_tv_text, re.I)
+    if m:
+        label = clean(m.group(1))
+        result["return_label"] = label
+        try:
+            month = datetime.strptime(m.group(2), "%B").month
+            day = int(m.group(3))
+            today = et_today()
+            year = today.year
+            candidate = date(year, month, day)
+            if candidate < today:
+                candidate = date(year + 1, month, day)
+            result["return_date"] = candidate
+        except ValueError:
+            pass
+    return result
 
 
 def fmt_time(t: Optional[time]) -> Optional[str]:
@@ -2387,6 +2442,28 @@ def has_reliable_media_context(raw: str, structured: Dict[str, str]) -> bool:
     return any(k in lower for k in ["stakeout", "press conference", "media availability", "briefing", "camera spray", "photo spray"])
 
 
+def split_dated_sections(text: str) -> List[tuple]:
+    """Split gallery text into (date, section) by weekday date headers.
+
+    Returns (None, text) for content before the first header so dateless
+    content keeps the previous behavior.
+    """
+    pattern = (r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),"
+               r"\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}")
+    parts = re.split(f"({pattern})", text or "", flags=re.I)
+    sections = []
+    if parts and clean(parts[0]):
+        sections.append((None, parts[0]))
+    for i in range(1, len(parts), 2):
+        header = parts[i] if i < len(parts) else ""
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        if clean(body):
+            # Title-case so ALL-CAPS headers ("THURSDAY, OCTOBER 1, 2026")
+            # parse; avoids making parse_date globally case-insensitive.
+            sections.append((parse_date(header.title()), body))
+    return sections or [(None, text)]
+
+
 def fetch_radio_tv_gallery_items() -> List[JoltItem]:
     """Parse Radio-TV Gallery public listings into structured logistics items.
 
@@ -2403,89 +2480,100 @@ def fetch_radio_tv_gallery_items() -> List[JoltItem]:
 
     remove_noise(soup)
     text = clean(soup.get_text(" "))
-    raw_events = split_radio_tv_committee_events(text)
-    radio_committee_events = bool(raw_events)
-    if not raw_events:
-        raw_events = split_ebb_events(text)
-    full_structured = parse_ebb_structured_fields(text)
-    if not radio_committee_events and full_structured.get("title") and (full_structured.get("location") or infer_location(text)):
-        raw_events = [text]
-    if not raw_events:
-        SOURCE_STATUS["radio_tv"] = "loaded: no event-like items parsed"
-        return []
-
+    # Parse per dated section so stale-dated listings (e.g. last week's
+    # committee schedule still on the page) don't surface as today's items.
+    today = et_today()
     items: List[JoltItem] = []
-    for raw in raw_events[:40]:
-        structured = parse_ebb_structured_fields(raw)
-        d = parse_date(structured.get("event_date") or "") or parse_date(raw)
-        t = parse_time(structured.get("event_time") or "") or parse_time(raw)
-        c = classify_ebb(raw)
-        chamber = c.get("chamber", "Senate")
-        if chamber == "House" or chamber not in {"Senate", "Joint"}:
+    sections = split_dated_sections(text)
+    radio_committee_events = False
+    for section_date, section_text in sections:
+        # Drop sections dated before today; keep dateless sections as-is.
+        if section_date and section_date != today:
             continue
-        if not is_joint_or_senate_relevant_ebb(structured, raw):
-            continue
-
-        senators = detect_senators(raw)
-        logistics = parse_radio_tv_committee_logistics(raw)
-        committee = logistics.get("committee") or infer_ebb_committee(raw)
-        topic = logistics.get("topic") or _concise_committee_topic(extract_topic(raw)) or _concise_committee_topic(structured.get("description") or structured.get("title") or "")
-        room = logistics.get("room") or (None if c["location"] == "Location not parsed" else c["location"])
-        has_committee_signal = c["category"] == "Committee Meetings & Hearings" and has_reliable_committee_context(raw, structured, committee, topic or "hearing")
-        has_media_signal = has_reliable_media_context(raw, structured)
-        if not (has_committee_signal or has_media_signal):
-            continue
-        if has_media_signal and not (d or t or c.get("location") != "Location not parsed"):
+        raw_events = split_radio_tv_committee_events(section_text)
+        if raw_events:
+            radio_committee_events = True
+        if not raw_events:
+            raw_events = split_ebb_events(section_text)
+        full_structured = parse_ebb_structured_fields(section_text)
+        if not radio_committee_events and full_structured.get("title") and (full_structured.get("location") or infer_location(section_text)):
+            raw_events = [section_text]
+        if not raw_events:
             continue
 
-        confidence = c["confidence"]
-        parse_reason = "committee context with event topic" if has_committee_signal else "media event context with logistics fields"
-        title = c["title"] if c["title"].lower() not in GENERIC_COMMITTEE_TITLES else ""
-        if has_committee_signal:
-            title = concise_committee_name(committee) or committee or "Committee hearing"
-            confidence = "high" if (t and room) else "medium"
+        for raw in raw_events[:40]:
+            structured = parse_ebb_structured_fields(raw)
+            d = parse_date(structured.get("event_date") or "") or parse_date(raw) or section_date
+            t = parse_time(structured.get("event_time") or "") or parse_time(raw)
+            c = classify_ebb(raw)
+            chamber = c.get("chamber", "Senate")
+            if chamber == "House" or chamber not in {"Senate", "Joint"}:
+                continue
+            if not is_joint_or_senate_relevant_ebb(structured, raw):
+                continue
 
-        item = JoltItem(
-            source="Radio-TV Gallery",
-            raw=shorten(raw, 700),
-            date_label=fmt_date(d),
-            time_label=fmt_time(t),
-            sort_datetime=sort_dt(d, t),
-            category="Committee Meetings & Hearings" if has_committee_signal else c["category"],
-            title=title or (topic[:90] if topic else "Radio-TV Gallery event"),
-            urgency=c["urgency"],
-            status=c["status"],
-            confidence=confidence,
-            quality=parse_reason,
-            location=room,
-            coverage_location=room,
-            building=infer_building(room),
-            measure=None,
-            takeaway=topic or c["takeaway"],
-            where_to_be=c["where_to_be"],
-            movement_cue=c["movement_cue"],
-            who_to_watch=committee or c["who_to_watch"],
-            coverage_note=logistics.get("coverage") or c["coverage_note"],
-            staff_note="Use Radio-TV Gallery listing to reconcile committee/media logistics.",
-            gallery_note="Confirm room, camera setup, credential access, and committee direction.",
-            senators_detected=senators,
-            coverage_target="committee" if has_committee_signal else infer_coverage_target(raw, senators, committee, None),
-            press_availability="Medium",
-            best_window="committee room / public access areas" if has_committee_signal else "scheduled event location",
-            event_type=c.get("event_type"),
-            committee=committee,
-            url=RADIO_TV_URL,
-            topic=topic,
-            access_note=logistics.get("coverage") or "",
-            parse_reason=parse_reason,
-            section_target="committee" if has_committee_signal else "media_event",
-        )
-        item.coverage_target = classify_coverage_target(item)
-        item.section_target = infer_section_target(item)
-        item.procedure_interpretation = classify_event_text(raw)
-        if item.confidence in {"medium", "high"}:
-            items.append(apply_past_status(item))
+            senators = detect_senators(raw)
+            logistics = parse_radio_tv_committee_logistics(raw)
+            committee = logistics.get("committee") or infer_ebb_committee(raw)
+            topic = logistics.get("topic") or _concise_committee_topic(extract_topic(raw)) or _concise_committee_topic(structured.get("description") or structured.get("title") or "")
+            room = logistics.get("room") or (None if c["location"] == "Location not parsed" else c["location"])
+            has_committee_signal = c["category"] == "Committee Meetings & Hearings" and has_reliable_committee_context(raw, structured, committee, topic or "hearing")
+            has_media_signal = has_reliable_media_context(raw, structured)
+            if not (has_committee_signal or has_media_signal):
+                continue
+            if has_media_signal and not (d or t or c.get("location") != "Location not parsed"):
+                continue
 
+            confidence = c["confidence"]
+            parse_reason = "committee context with event topic" if has_committee_signal else "media event context with logistics fields"
+            title = c["title"] if c["title"].lower() not in GENERIC_COMMITTEE_TITLES else ""
+            if has_committee_signal:
+                title = concise_committee_name(committee) or committee or "Committee hearing"
+                confidence = "high" if (t and room) else "medium"
+
+            item = JoltItem(
+                source="Radio-TV Gallery",
+                raw=shorten(raw, 700),
+                date_label=fmt_date(d),
+                time_label=fmt_time(t),
+                sort_datetime=sort_dt(d, t),
+                category="Committee Meetings & Hearings" if has_committee_signal else c["category"],
+                title=title or (topic[:90] if topic else "Radio-TV Gallery event"),
+                urgency=c["urgency"],
+                status=c["status"],
+                confidence=confidence,
+                quality=parse_reason,
+                location=room,
+                coverage_location=room,
+                building=infer_building(room),
+                measure=None,
+                takeaway=topic or c["takeaway"],
+                where_to_be=c["where_to_be"],
+                movement_cue=c["movement_cue"],
+                who_to_watch=committee or c["who_to_watch"],
+                coverage_note=logistics.get("coverage") or c["coverage_note"],
+                staff_note="Use Radio-TV Gallery listing to reconcile committee/media logistics.",
+                gallery_note="Confirm room, camera setup, credential access, and committee direction.",
+                senators_detected=senators,
+                coverage_target="committee" if has_committee_signal else infer_coverage_target(raw, senators, committee, None),
+                press_availability="Medium",
+                best_window="committee room / public access areas" if has_committee_signal else "scheduled event location",
+                event_type=c.get("event_type"),
+                committee=committee,
+                url=RADIO_TV_URL,
+                topic=topic,
+                access_note=logistics.get("coverage") or "",
+                parse_reason=parse_reason,
+                section_target="committee" if has_committee_signal else "media_event",
+            )
+            item.coverage_target = classify_coverage_target(item)
+            item.section_target = infer_section_target(item)
+            item.procedure_interpretation = classify_event_text(raw)
+            if item.confidence in {"medium", "high"}:
+                items.append(apply_past_status(item))
+
+    if not items:
+        SOURCE_STATUS["radio_tv"] = "loaded: no event-like items parsed"
     return dedupe_items(items)[:30]
 
 def fetch_x_items() -> List[JoltItem]:
@@ -4452,6 +4540,25 @@ def render_alert_banner(alerts: List[Dict[str, Any]]) -> str:
     """
 
 
+def render_recess_banner(recess: Optional[Dict[str, Any]]) -> str:
+    if not recess or not recess.get("in_recess"):
+        return ""
+    return_label = recess.get("return_label") or ""
+    return_date = recess.get("return_date")
+    when = f"Returns {html.escape(return_label)}." if return_label else ""
+    days = ""
+    if return_date:
+        delta = (return_date - et_today()).days
+        if delta > 0:
+            days = f" ({delta} days)"
+    return f"""
+    <section class="ticker" aria-label="Senate recess" data-refresh-key="recess-banner">
+        <div class="mode-label">SENATE IN RECESS{html.escape(days)}</div>
+        <div style="margin-top:6px;">The Senate stands in recess. No floor votes expected. {when} Pro forma sessions only until return.</div>
+    </section>
+    """
+
+
 def render_live_vote_mode(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> str:
     now = now or datetime.now()
     schedule_context = (forward_context or {}).get("schedule_context", {})
@@ -4880,7 +4987,8 @@ def dashboard(
         all_groups = grouped(all_items)
         floor_remarks_items = build_floor_remarks(all_groups.get("Remarks", []))
         procedural_items = build_procedural_context(all_groups.get("Earlier Floor Activity", []) + all_groups.get("Notes", []))
-        now = datetime.now()
+        now = et_now()
+        recess = detect_senate_recess(fetch_url(RADIO_TV_URL) or "")
         _recent_procedure, _background_procedure = procedural_buckets(procedural_items, now)
         activity_candidates: List[JoltItem] = []
         for activity_category in ["Earlier Floor Activity", "Schedule", "Votes", "Floor Action", "Committee Meetings & Hearings"]:
@@ -4931,7 +5039,9 @@ def dashboard(
             deliver_alert_events(notification_events, str(request.base_url))
         notification_events_json = html.escape(json.dumps([asdict(event) for event in notification_events]), quote=False)
         alert_banner = render_alert_banner(alert_signals)
-        live_vote_mode = render_live_vote_mode(items, forward_context, now)
+        recess_banner = render_recess_banner(recess)
+        live_vote_mode = ('<div hidden data-refresh-key="live-vote-mode"></div>'
+                          if recess else render_live_vote_mode(items, forward_context, now))
         now_board = render_now_board(operational_status)
         floor_watch = render_floor_watch(current_coverage_signals, schedule_context, now)
         room_checkpoints = render_room_checkpoints(groups.get("Committee Meetings & Hearings", []), now)
@@ -5283,6 +5393,7 @@ def dashboard(
             </header>
 
             <main id="main-content">
+                {recess_banner}
                 {live_vote_mode}
                 <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
                 {now_board}
