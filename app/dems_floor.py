@@ -24,7 +24,7 @@ _ENTRY_DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
 _WRAPUP_TITLE_RE = re.compile(r"Wrap Up for\s+(.+?)(?=\s+Roll Call Votes|\s*$)", re.I)
 _SCHEDULE_TITLE_RE = re.compile(r"Schedule for\s+(.+?)(?=\s+The Senate|\s*$)", re.I)
 
-# Vote result: "...; not agreed to: 53-47." / "...; agreed to: 53-47." / "...; confirmed: 47-41."
+# Vote result: "...; not agreed to: 53-47." / "...; agreed to: 53-47." / "...; confirmed: 47-41." / "...; invoked: 74-25."
 _VOTE_RE = re.compile(
     r"(Motion to invoke cloture on the motion to proceed to|"
     r"Motion to invoke cloture on|"
@@ -32,8 +32,8 @@ _VOTE_RE = re.compile(
     r"Motion to proceed to|"
     r"Passage of|"
     r"Adoption of)"
-    r"\s+(.*?)"
-    r";\s*(not agreed to|agreed to|confirmed|not confirmed|passed|failed|rejected|adopted)\s*:\s*(\d{1,3}\s*-\s*\d{1,3})",
+    r"\s+([^;]*?)"
+    r";\s*(not agreed to|agreed to|confirmed|not confirmed|passed|failed|rejected|adopted|invoked)\s*:\s*(\d{1,3}\s*-\s*\d{1,3})",
     re.I,
 )
 
@@ -86,7 +86,7 @@ def parse_vote_results(text: str) -> List[Dict]:
             "title": label,
             "result": result.lower(),
             "tally": re.sub(r"\s+", "", tally),
-            "passed": result.lower() in {"agreed to", "confirmed", "passed", "adopted"},
+            "passed": result.lower() in {"agreed to", "confirmed", "passed", "adopted", "invoked"},
         })
     return results
 
