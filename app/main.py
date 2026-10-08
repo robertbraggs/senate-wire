@@ -5422,18 +5422,6 @@ def dashboard(
                 {section("House / Joint Coverage Notes", groups.get("House / Joint Coverage Notes", []), view) if groups.get("House / Joint Coverage Notes", []) else ""}
                 {render_material_context_section(material_context, view) if material_context else ""}
 
-                <section class="signup-card" aria-labelledby="alerts-signup-heading">
-                    <h2 id="alerts-signup-heading">Get Senate JOLT alerts</h2>
-                    <p>Receive email alerts for major Senate schedule changes, vote windows, media events, and press logistics signals.</p>
-                    <form id="alerts-signup-form" action="/alerts/signup" method="post" novalidate>
-                        <label class="sr-only" for="alerts-email">Email address</label>
-                        <input id="alerts-email" name="email" type="email" placeholder="Email address" autocomplete="email" required>
-                        <button type="submit">Sign up</button>
-                    </form>
-                    <div id="alerts-signup-message" class="signup-message" role="status" aria-live="polite"></div>
-                    <p class="notice">Senate JOLT alerts are compiled from public sources and Gallery-appropriate updates. You can unsubscribe at any time.</p>
-                </section>
-
                 <div class="links">
                     <h2>Helpful Links</h2>
                     {quick_links}
