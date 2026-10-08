@@ -4938,6 +4938,49 @@ def _floor_watch_title(item: JoltItem) -> str:
     return title[:110]
 
 
+def _recent_floor_votes(max_votes: int = 8) -> List[Dict[str, Any]]:
+    """Parse recent roll call results from the Senate Dems floor feed cache."""
+    try:
+        from app.dems_floor import latest_wrap_up_votes
+    except ImportError:
+        return []
+    try:
+        text = get_source_text("senate_dems_floor")
+    except Exception:
+        return []
+    if not text or len(text) < 200:
+        return []
+    try:
+        return latest_wrap_up_votes(text, max_entries=2)[:max_votes]
+    except Exception:
+        return []
+
+
+def render_recent_votes() -> str:
+    votes = _recent_floor_votes()
+    if not votes:
+        return ""
+    rows = []
+    for v in votes:
+        icon = "✅" if v["passed"] else "❌"
+        what = v["measure"] or v["title"]
+        if v["measure"] and v["title"]:
+            what = f"{v['measure']} — {v['title']}"
+        rows.append(
+            f"<div class='board-row floor-row'><span class='signal-dot'>{icon}</span>"
+            f"<div><strong>{html.escape(what[:90])}</strong>"
+            f"<span>{html.escape(v['action'])} · {html.escape(v['result'])} {html.escape(v['tally'])}</span></div>"
+            f"<em>{html.escape(v['vote_date'])}</em></div>"
+        )
+    return (
+        "<section class='section compact-section' data-refresh-key='recent-votes'>"
+        "<h2>RECENT VOTES</h2>"
+        f"{''.join(rows)}"
+        "<div class='collapsed-footer'>Source: Senate Democratic Caucus floor wrap-ups</div>"
+        "</section>"
+    )
+
+
 def _calendar_orders_context() -> Dict[str, Any]:
     """Parse the Senate Calendar of Business UC agreements from the source cache.
 
@@ -5494,6 +5537,7 @@ def dashboard(
                 <div class="offline-warning" id="offline-warning" hidden>Live data temporarily unavailable. Showing last loaded page.</div>
                 {now_board}
                 {floor_watch}
+                {render_recent_votes()}
                 {room_checkpoints}
                 {section("Floor Remarks", floor_remarks_items, view, collapsed=True, hide_empty=True)}
                 {full_hearings}
