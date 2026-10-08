@@ -373,6 +373,10 @@ def fetch_url(url: str, timeout: int = 20) -> str:
 
 
 def fetch_forward_schedule_sources() -> Dict[str, Any]:
+    # Memoize the HTML -> text extraction per source, keyed on the raw
+    # content hash. Senate pages barely change between requests, so this
+    # skips 6 BeautifulSoup parses on nearly every dashboard render.
+    global _FORWARD_SOURCES_TEXT_CACHE
     sources = [
         ("daily_press", CONGRESSIONAL_REPORTERS_URL, False),
         ("senate_dems_schedule", SENATE_DEMS_SCHEDULE_URL, False),
@@ -386,18 +390,32 @@ def fetch_forward_schedule_sources() -> Dict[str, Any]:
     errors = {}
     for key, url, is_pdf in sources:
         try:
+            raw = fetch_url(url, timeout=20)
             if is_pdf:
-                text = fetch_url(url, timeout=20)
+                text = raw
+            elif raw:
+                content_hash = _sha256_text(raw)
+                cached = _FORWARD_SOURCES_TEXT_CACHE.get(key)
+                if cached and cached[0] == content_hash:
+                    text = cached[1]
+                else:
+                    soup = BeautifulSoup(raw, "html.parser")
+                    remove_noise(soup)
+                    text = clean(soup.get_text(" "))
+                    _FORWARD_SOURCES_TEXT_CACHE[key] = (content_hash, text)
             else:
-                soup = BeautifulSoup(fetch_url(url, timeout=20), "html.parser")
-                remove_noise(soup)
-                text = clean(soup.get_text(" "))
+                text = ""
             if text:
                 loaded.append({"key": key, "url": url})
                 texts.append({"key": key, "url": url, "text": text[:20000]})
+            else:
+                errors[key] = "no cached source text yet"
         except Exception as exc:
             errors[key] = sanitize_error_message(exc)
     return {"loaded_sources": loaded, "texts": texts, "errors": errors}
+
+
+_FORWARD_SOURCES_TEXT_CACHE: Dict[str, tuple] = {}
 
 
 
