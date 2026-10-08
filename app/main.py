@@ -1733,7 +1733,7 @@ def apply_past_status(item: JoltItem) -> JoltItem:
     except ValueError:
         return item
 
-    now = datetime.now()
+    now = et_now()
 
     if dt < now - timedelta(minutes=45):
         item.status = "historical"
@@ -2287,7 +2287,7 @@ def fetch_ebb_items() -> List[JoltItem]:
         return []
 
     items = []
-    today = datetime.now().date()
+    today = et_today()
 
     for raw in raw_events:
         structured = parse_ebb_structured_fields(raw)
@@ -3038,7 +3038,7 @@ def score_signal(item: JoltItem) -> int:
     minutes = None
     if item.sort_datetime:
         try:
-            minutes = (datetime.fromisoformat(item.sort_datetime).replace(tzinfo=None) - datetime.now()).total_seconds() / 60
+            minutes = (datetime.fromisoformat(item.sort_datetime).replace(tzinfo=None) - et_now()).total_seconds() / 60
         except Exception:
             minutes = None
     if minutes is None:
@@ -3169,7 +3169,7 @@ def important_now(items: List[JoltItem]) -> Optional[JoltItem]:
 
 
 def next_90(items: List[JoltItem]) -> List[JoltItem]:
-    now = datetime.now()
+    now = et_now()
     out = []
 
     for item in items:
@@ -3255,7 +3255,7 @@ def build_forward_schedule_context() -> Dict[str, Any]:
             parts.append(sentence)
         merged = " ".join(parts)
     floor_state_before = (LAST_FORWARD_SCHEDULE_DEBUG.get("schedule_context", {}) or {}).get("floorStatus") or (LAST_FORWARD_SCHEDULE_DEBUG.get("operational_floor_state") or "unknown")
-    schedule_context = parse_forward_floor_schedule(merged, date.today() - timedelta(days=14))
+    schedule_context = parse_forward_floor_schedule(merged, et_today())
     if radio_tv_hash_changed:
         schedule_context["floor_watch_cache_invalidated"] = True
     if radio_votes_detected:
@@ -3631,7 +3631,7 @@ def detect_activity_mode(items: List[JoltItem]) -> str:
         return "EVENT_DAY"
     return "LOW_ACTIVITY"
 def movement_banner(items: List[JoltItem]) -> Dict[str, str]:
-    now = datetime.now()
+    now = et_now()
 
     def parse_item_dt(item: JoltItem) -> Optional[datetime]:
         if not item.sort_datetime:
@@ -3944,7 +3944,7 @@ def gallery_notes_section() -> str:
 
 
 def movement_ticker(items: List[JoltItem]) -> Dict[str, str]:
-    now = datetime.now()
+    now = et_now()
     for item in items:
         text = f"{item.title} {item.raw}".lower()
         if item.status != "historical" and ("vote underway" in text or "now voting" in text):
@@ -4467,7 +4467,7 @@ def _vote_underway(items: List[JoltItem]) -> Optional[JoltItem]:
 
 
 def build_notification_events(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> List[NotificationEvent]:
-    now = now or datetime.now()
+    now = now or et_now()
     events: List[NotificationEvent] = []
     schedule_context = (forward_context or {}).get("schedule_context", {})
     vote_block = schedule_context.get("vote_block", {}) or {}
@@ -4512,7 +4512,7 @@ def build_notification_events(items: List[JoltItem], forward_context: Dict[str, 
 
 
 def build_alert_signals(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    now = now or datetime.now()
+    now = now or et_now()
     schedule_context = (forward_context or {}).get("schedule_context", {})
     vote_block = schedule_context.get("vote_block", {}) or {}
     vote_block_label = canonical_vote_block_time(schedule_context) if schedule_context else ""
@@ -4605,7 +4605,7 @@ def render_recess_banner(recess: Optional[Dict[str, Any]], pro_formas: Optional[
 
 
 def render_live_vote_mode(items: List[JoltItem], forward_context: Dict[str, Any], now: Optional[datetime] = None) -> str:
-    now = now or datetime.now()
+    now = now or et_now()
     schedule_context = (forward_context or {}).get("schedule_context", {})
     vote_block = schedule_context.get("vote_block", {}) or {}
     vote_block_label = canonical_vote_block_time(schedule_context) if schedule_context else ""

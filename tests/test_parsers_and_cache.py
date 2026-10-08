@@ -36,6 +36,7 @@ class _PinnedDate(date):
 
 def _pin_fixture_era(monkeypatch):
     monkeypatch.setattr("app.main.date", _PinnedDate)
+    monkeypatch.setattr("app.main.et_today", lambda: _PinnedDate(2026, 5, 11))
 
 
 def fixture_text(name: str) -> str:
