@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import copy
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, time, timedelta
 from typing import Optional, List, Dict, Tuple, Any
@@ -2557,7 +2558,31 @@ def dedupe_items(items: List[JoltItem]) -> List[JoltItem]:
     return unique
 
 
+_ALL_ITEMS_CACHE: Dict[str, tuple] = {}
+
+
 def get_all_items() -> List[JoltItem]:
+    # Parsed items only change when a source changes: memoize on the raw
+    # source content hashes and hand out deep copies so per-request
+    # mutation downstream can never contaminate the cache.
+    raw_texts = [
+        fetch_url(CONGRESSIONAL_REPORTERS_URL),
+        fetch_url(EBB_URL),
+        fetch_url(RADIO_TV_URL),
+    ]
+    fingerprint = _sha256_text(
+        "\n".join(raw_texts)
+        + f"|congress={bool(CONGRESS_API_KEY)}|x={bool(X_BEARER_TOKEN)}"
+    )
+    cached = _ALL_ITEMS_CACHE.get("all")
+    if cached and cached[0] == fingerprint:
+        return copy.deepcopy(cached[1])
+    items = _get_all_items_uncached()
+    _ALL_ITEMS_CACHE["all"] = (fingerprint, items)
+    return copy.deepcopy(items)
+
+
+def _get_all_items_uncached() -> List[JoltItem]:
     items = get_floor_items() + fetch_ebb_items() + fetch_radio_tv_gallery_items() + fetch_committee_meetings_items() + fetch_x_items()
     for item in items:
         low = f"{item.title} {item.raw}".lower()
