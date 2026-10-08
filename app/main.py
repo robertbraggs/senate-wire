@@ -4945,12 +4945,16 @@ def _recent_floor_votes(max_votes: int = 8) -> List[Dict[str, Any]]:
     except ImportError:
         return []
     try:
-        text = get_source_text("senate_dems_floor")
+        raw = get_source_text("senate_dems_floor")
     except Exception:
         return []
-    if not text or len(text) < 200:
+    if not raw or len(raw) < 200:
         return []
     try:
+        # Cached source is raw HTML; extract clean text like the forward-source pipeline does
+        soup = BeautifulSoup(raw, "html.parser")
+        remove_noise(soup)
+        text = clean(soup.get_text(" "))
         return latest_wrap_up_votes(text, max_entries=2)[:max_votes]
     except Exception:
         return []
