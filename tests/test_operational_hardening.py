@@ -336,7 +336,7 @@ def test_unresolved_prior_procedure_can_be_shown_as_material_carryover():
     assert current == []
     assert prior == [carryover_item]
     assert "Floor Timing Carryover" in rendered
-    assert "may affect the next coverage window" in rendered
+    assert "may affect the next coverage time" in rendered
 
 
 def test_empty_current_state_message_uses_operational_language():
@@ -481,7 +481,7 @@ def test_operational_language_avoids_directive_vote_block_copy():
     rendered = main.section("Current Coverage Signals", signals, "reporter", collapsed=True)
 
     combined = " ".join(actions) + rendered
-    assert "Next major floor coverage window is the announced vote sequence" in " ".join(actions)
+    assert "is the next major floor coverage" in " ".join(actions)
     assert "Key votes:" in " ".join(actions)
     assert "Prepare for" not in combined
     assert "pre-position" not in combined
@@ -615,7 +615,7 @@ def test_homepage_logistics_card_does_not_render_none_announced_pro_forma_sectio
     assert "Pro forma sessions" not in rendered
     assert "None announced" not in rendered
     assert "The Senate is scheduled to return after any pro forma sessions" not in rendered
-    assert "The announced vote sequence is the next clear floor staffing checkpoint." in rendered
+    assert "The announced vote sequence is the next time to be ready on the floor." in rendered
 
 
 def test_homepage_logistics_card_renders_upcoming_pro_forma_when_relevant():
@@ -641,8 +641,8 @@ def test_homepage_logistics_card_promotes_vote_copy_when_pro_forma_suppressed():
     rendered = main.render_next_expected_floor_action(None, {"schedule_context": schedule_context})
 
     assert "Pro forma sessions" not in rendered
-    assert "Logistics note:</strong> The announced vote sequence is the next clear floor staffing checkpoint." in rendered
-    assert "Coverage timing:</strong> Next major floor coverage window is the announced vote sequence." in rendered
+    assert "Note:</strong> The announced vote sequence is the next time to be ready on the floor." in rendered
+    assert "When to cover:</strong> The announced vote sequence is the next major floor coverage." in rendered
 
 
 def test_homepage_logistics_card_structure_preserved_when_pro_forma_suppressed():
@@ -660,8 +660,8 @@ def test_homepage_logistics_card_structure_preserved_when_pro_forma_suppressed()
     assert "Senate next convenes:</strong>" in rendered
     assert "Next expected floor vote window:</strong>" in rendered
     assert "Expected votes:</strong><ol>" in rendered
-    assert "Logistics note:</strong>" in rendered
-    assert "Coverage timing:</strong>" in rendered
+    assert "Note:</strong>" in rendered
+    assert "When to cover:</strong>" in rendered
 
 
 def test_refresh_script_defers_passive_updates_while_scrolling():
