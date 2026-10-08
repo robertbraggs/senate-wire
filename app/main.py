@@ -497,28 +497,68 @@ def _force_radio_tv_expected_today(schedule_context: Dict[str, Any], radio_text:
     schedule_context["source_url"] = RADIO_TV_URL
 
 
+# (finder, required_after, clip_start): linear-time equivalent of the old
+# `([^.]*keyword[^.]*\.)` finditer patterns. The [^.] runs could never span a
+# period, so each match is exactly the period-delimited window around the
+# keyword -- located via search + rfind/find instead of backtracking
+# (the old shape took ~6s per dashboard render on ~100KB inputs).
+_NEXT_FLOOR_ACTION_PATTERNS = [
+    (re.compile(r"The Senate will next convene", re.I), None, True),
+    (re.compile(r"will next convene at", re.I), None, False),
+    (re.compile(r"next convene on", re.I), None, False),
+    (re.compile(r"pro forma session", re.I), None, False),
+    (re.compile(r"pro forma sessions only", re.I), None, False),
+    (re.compile(r"At\s+\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)", re.I),
+     re.compile(r"roll call votes?", re.I), True),
+    (re.compile(r"Following Leader remarks", re.I), None, False),
+    (re.compile(r"period of morning business", re.I), None, False),
+    (re.compile(r"proceed to Executive Session", re.I), None, False),
+    (re.compile(r"vote on adoption", re.I), None, False),
+    (re.compile(r"motion to invoke cloture", re.I), None, False),
+    (re.compile(r"cloture on ", re.I), None, False),
+    (re.compile(r"confirmation of ", re.I), None, False),
+]
+
+
+def _iter_action_windows(text: str, finder, required_after, clip_start):
+    """Yield cleaned snippet strings, in left-to-right match order."""
+    pos, n = 0, len(text)
+    while pos < n:
+        m = finder.search(text, pos)
+        if not m:
+            return
+        if required_after is None:
+            prev = text.rfind(".", 0, m.start())
+            nxt = text.find(".", m.end())
+            if nxt == -1:  # no closing period: old pattern couldn't match
+                pos = m.start() + 1
+                continue
+            start = m.start() if clip_start else prev + 1
+            end = nxt + 1
+        else:
+            seg_end = text.find(".", m.end())
+            seg = text[m.end(): seg_end if seg_end != -1 else n]
+            vm = required_after.search(seg)
+            if not vm:
+                pos = m.start() + 1
+                continue
+            close = text.find(".", m.end() + vm.end())
+            if close == -1:
+                pos = m.start() + 1
+                continue
+            start, end = m.start(), close + 1
+        yield clean(text[start:end])
+        pos = end
+
+
 def extract_next_floor_actions(text: str) -> List[Dict[str, str]]:
     if not text:
         return []
-    patterns = [
-        r"(The Senate will next convene[^.]*\.)",
-        r"([^.]*will next convene at[^.]*\.)",
-        r"([^.]*next convene on[^.]*\.)",
-        r"([^.]*pro forma session[^.]*\.)",
-        r"([^.]*pro forma sessions only[^.]*\.)",
-        r"(At\s+\d{1,2}:\d{2}\s*(?:a\.m\.|p\.m\.|am|pm)[^.]*roll call votes?[^.]*\.)",
-        r"([^.]*Following Leader remarks[^.]*\.)",
-        r"([^.]*period of morning business[^.]*\.)",
-        r"([^.]*proceed to Executive Session[^.]*\.)",
-        r"([^.]*vote on adoption[^.]*\.)",
-        r"([^.]*motion to invoke cloture[^.]*\.)",
-        r"([^.]*cloture on [^.]*\.)",
-        r"([^.]*confirmation of [^.]*\.)",
-    ]
     actions = []
-    for pattern in patterns:
-        for m in re.finditer(pattern, text, flags=re.I):
-            snippet = clean(m.group(1))
+    # Pattern-major order reproduces the original insertion order exactly
+    # (matters for de-dupe/sort ties).
+    for finder, required_after, clip_start in _NEXT_FLOOR_ACTION_PATTERNS:
+        for snippet in _iter_action_windows(text, finder, required_after, clip_start):
             d = parse_date(snippet)
             t = parse_time(snippet)
             actions.append({
