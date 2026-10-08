@@ -67,6 +67,10 @@ def default_status_index_path() -> Path:
 def load_status_index(path: Optional[Path] = None) -> Dict[str, StatusStep]:
     csv_path = path or default_status_index_path()
     steps: Dict[str, StatusStep] = {}
+    if not csv_path.exists():
+        # Reference data missing (e.g. stripped from a build): degrade the
+        # procedure engine rather than taking the whole dashboard down.
+        return steps
     with csv_path.open(newline="", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):
             code = _row_value(row, "code", "status_code", "status")
