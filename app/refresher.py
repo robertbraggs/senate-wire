@@ -208,8 +208,10 @@ class SourceRefreshManager:
         httpx = importlib.import_module("httpx")
         timeout = httpx.Timeout(source.timeout_seconds, connect=min(5.0, source.timeout_seconds))
 
-        # Resolve latest calendar with real HEAD checks
+        # Try GET directly on recent dates (HEAD+GET doubles the round trips).
+        # Most days the calendar is from today or yesterday.
         resolved = None
+        pdf_bytes = None
         from datetime import date as _date, timedelta as _td
         today = _date.today()
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
@@ -217,18 +219,15 @@ class SourceRefreshManager:
                 day = today - _td(days=offset)
                 url = calendar_url_for(congress, day)
                 try:
-                    head = await client.head(url)
-                    if head.status_code == 200:
+                    response = await client.get(url)
+                    if response.status_code == 200 and response.content[:4] == b"%PDF":
                         resolved = (url, day.strftime("%Y-%m-%d"))
+                        pdf_bytes = response.content
                         break
                 except Exception:
                     continue
-            if not resolved:
+            if not resolved or not pdf_bytes:
                 raise RuntimeError("no Senate calendar PDF found in last 15 days")
-            url, cal_date = resolved
-            response = await client.get(url)
-            response.raise_for_status()
-            pdf_bytes = response.content
         try:
             full_text = extract_text_from_pdf(pdf_bytes)
         except Exception as exc:
@@ -237,11 +236,11 @@ class SourceRefreshManager:
         if not uc_section:
             raise RuntimeError("calendar PDF has no UC agreements section")
         return {
-            "url": sanitize_url(url),
+            "url": sanitize_url(resolved[0]),
             "text": uc_section[:20000],
             "content_type": "application/pdf",
             "http_status": 200,
-            "calendar_date": cal_date,
+            "calendar_date": resolved[1],
         }
 
 

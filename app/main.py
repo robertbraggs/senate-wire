@@ -4576,7 +4576,7 @@ def render_alert_banner(alerts: List[Dict[str, Any]]) -> str:
     """
 
 
-def render_recess_banner(recess: Optional[Dict[str, Any]]) -> str:
+def render_recess_banner(recess: Optional[Dict[str, Any]], pro_formas: Optional[List[Dict[str, Any]]] = None) -> str:
     if not recess or not recess.get("in_recess"):
         return ""
     return_label = recess.get("return_label") or ""
@@ -4587,10 +4587,19 @@ def render_recess_banner(recess: Optional[Dict[str, Any]]) -> str:
         delta = (return_date - et_today()).days
         if delta > 0:
             days = f" ({delta} days)"
+    pf_html = ""
+    if pro_formas:
+        items = "".join(
+            f"<li>{html.escape(p.get('date_label', ''))} at {html.escape(p.get('time_label', ''))}</li>"
+            for p in pro_formas[:8]
+        )
+        if items:
+            pf_html = f"<div style=\"margin-top:6px;\"><strong>Pro forma sessions:</strong><ul style=\"margin:4px 0 0 18px;\">{items}</ul></div>"
     return f"""
     <section class="ticker" aria-label="Senate recess" data-refresh-key="recess-banner">
         <div class="mode-label">SENATE IN RECESS{html.escape(days)}</div>
         <div style="margin-top:6px;">The Senate stands in recess. No floor votes expected. {when} Pro forma sessions only until return.</div>
+        {pf_html}
     </section>
     """
 
@@ -5126,7 +5135,7 @@ def dashboard(
             deliver_alert_events(notification_events, str(request.base_url))
         notification_events_json = html.escape(json.dumps([asdict(event) for event in notification_events]), quote=False)
         alert_banner = render_alert_banner(alert_signals)
-        recess_banner = render_recess_banner(recess)
+        recess_banner = render_recess_banner(recess, _displayable_pro_formas(schedule_context))
         live_vote_mode = ('<div hidden data-refresh-key="live-vote-mode"></div>'
                           if recess else render_live_vote_mode(items, forward_context, now))
         now_board = render_now_board(operational_status)
