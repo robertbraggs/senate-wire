@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -81,6 +81,23 @@ def service_worker():
 
 
 COMMITTEE_SCHEDULE_URL = "https://www.congress.gov/committee-schedule/weekly/2026/04/27?q=%7B%22chamber%22%3A%22Senate%22%7D"
+
+
+def current_committee_schedule_url() -> str:
+    """Congress.gov weekly committee schedule for the current ET week.
+
+    The week URL is pinned to Monday's date, so it is computed fresh on
+    every render instead of pointing at a hardcoded week.
+    """
+    monday = et_today() - timedelta(days=et_today().weekday())
+    q = quote('{"chamber":"Senate"}', safe="")
+    return f"https://www.congress.gov/committee-schedule/weekly/{monday:%Y/%m/%d}?q={q}"
+
+
+def resolve_link_url(name: str, url: str) -> str:
+    if name == "Congress.gov Committee Schedule":
+        return current_committee_schedule_url()
+    return url
 SOURCE_STATUS_ALIASES = {"daily_press": "congressional_reporters"}
 CONGRESS_API_BASE = "https://api.congress.gov/v3"
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY")
@@ -109,7 +126,7 @@ QUICK_LINK_GROUPS = {
     "Contacts": [
         ("Press Secretary Contacts", "https://www.radiotv.senate.gov/gallery-members/press-secretary-contacts/"),
         ("Committee Press Contacts", "https://www.radiotv.senate.gov/gallery-members/commitee-press-contacts/"),
-        ("Gallery Regulars / Journalist Contacts", "https://www.radiotv.senate.gov/gallery-members/"),
+        ("Gallery Regulars", "https://www.radiotv.senate.gov/gallery-members/"),
     ],
     "Floor / Official": [
         ("Roll Call Votes", "https://www.senate.gov/legislative/votes_new.htm"),
@@ -3680,7 +3697,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
     links = []
     committee_event = any(k in clean(f"{item.title} {item.raw}").lower() for k in ["hearing", "committee meeting", "markup", "business meeting"])
     if item.committee and committee_event:
-        links.append(f"<a class='source' href='{COMMITTEE_SCHEDULE_URL}' target='_blank'>Committee Schedule</a>")
+        links.append(f"<a class='source' href='{current_committee_schedule_url()}' target='_blank'>Committee Schedule</a>")
     if item.source == 'EBB':
         links.append(f"<a class='source' href='{EBB_URL}' target='_blank'>Open source</a>")
     elif item.url:
@@ -3694,7 +3711,7 @@ def item_card(item: JoltItem, view: str = "reporter") -> str:
             ("Room", location),
         ]
         logistics = "<div class='logistics'>" + "".join(f"<div><strong>{html.escape(k)}:</strong> {html.escape(v)}</div>" for k, v in rows if is_meaningful(v)) + "</div>"
-        link = item.url or COMMITTEE_SCHEDULE_URL
+        link = item.url or current_committee_schedule_url()
         return f"""
         <article class="card">
             <h3>{html.escape(committee)}</h3>
@@ -4464,7 +4481,7 @@ def build_notification_events(items: List[JoltItem], forward_context: Dict[str, 
         if item.source == "EBB" and item.status != "historical":
             events.append(make_notification_event("New EBB media event posted", item.title or item.raw or "A media event was posted on EBB.", "high", "ebb_media_event", "EBB", item.url or EBB_URL, event_time, now, ttl_minutes=240))
         if item.category == "Committee Meetings & Hearings" and minutes is not None and 0 <= minutes <= 120:
-            events.append(make_notification_event("New committee hearing within 2 hours", item.title or item.raw or "Check committee schedule.", "medium", "committee_hearing_within_2", item.source or "Committee schedule", item.url or COMMITTEE_SCHEDULE_URL, event_time, now, ttl_minutes=180))
+            events.append(make_notification_event("New committee hearing within 2 hours", item.title or item.raw or "Check committee schedule.", "medium", "committee_hearing_within_2", item.source or "Committee schedule", item.url or current_committee_schedule_url(), event_time, now, ttl_minutes=180))
         if "cloture filed" in text and item.status != "historical":
             events.append(make_notification_event("Cloture filed — future vote likely", item.title or item.raw or "Cloture was filed.", "high", "cloture_filed", item.source or "Public Senate source", item.url or FLOOR_ACTIVITY_URL, event_time, now, ttl_minutes=1440))
 
@@ -4592,7 +4609,7 @@ def render_quick_link_groups() -> str:
     pieces = []
     for group, links in QUICK_LINK_GROUPS.items():
         key = _refresh_key(f"links-{group}")
-        rows = "".join(f"<a href='{html.escape(url)}' target='_blank' rel='noopener'>{html.escape(name)}</a>" for name, url in links)
+        rows = "".join(f"<a href='{html.escape(resolve_link_url(name, url))}' target='_blank' rel='noopener'>{html.escape(name)}</a>" for name, url in links)
         pieces.append(f"<details class='link-group' data-accordion-key='{key}'><summary>{html.escape(group)}</summary>{rows}</details>")
     return "".join(pieces)
 
@@ -4949,7 +4966,7 @@ def render_room_checkpoints(items: List[JoltItem], now: datetime) -> str:
         committee = concise_committee_name(item.committee) or concise_committee_name(item.title) or "Committee"
         room = filter_global_boilerplate(item.location) or "Room TBD"
         time_label = item.time_label or (parse_item_datetime(item).strftime("%-I:%M") if parse_item_datetime(item) else "TBD")
-        link = html.escape(item.url or COMMITTEE_SCHEDULE_URL)
+        link = html.escape(item.url or current_committee_schedule_url())
         rows.append(f"<a class='board-row room-row' href='{link}' target='_blank' rel='noopener'><time>{html.escape(time_label)}</time><strong>{html.escape(committee)}</strong><span>{html.escape(room)}</span></a>")
     footer = f"<div class='collapsed-footer'>See all hearings ({total})</div>" if total else ""
     return f"<section class='section compact-section' data-refresh-key='room-checkpoints'><h2>ROOM CHECKPOINTS</h2>{''.join(rows)}{footer}</section>"
@@ -4964,7 +4981,7 @@ def render_full_hearings_collapsed(items: List[JoltItem], view: str) -> str:
         committee = concise_committee_name(item.committee) or "Committee"
         room = filter_global_boilerplate(item.location) or "Room TBD"
         time_label = item.time_label or "TBD"
-        url = html.escape(item.url or COMMITTEE_SCHEDULE_URL)
+        url = html.escape(item.url or current_committee_schedule_url())
         rows.append(f"<a class='board-row room-row' href='{url}' target='_blank' rel='noopener'><time>{html.escape(time_label)}</time><strong>{html.escape(committee)}</strong><span>{html.escape(room)}</span></a>")
     return f"<section class='section compact-section' data-refresh-key='full-hearings'><details><summary><h2>Full hearings ({len(visible)})</h2></summary>{''.join(rows)}</details></section>"
 
@@ -5422,7 +5439,7 @@ def dashboard(
                     {quick_links}
                     
                 </div>
-                <section class="section"><h2>Public Notice</h2><p class="empty">Information is compiled from public sources and Gallery-appropriate updates. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
+                <section class="section"><h2>Public Notice</h2><p class="empty">All information on this page is compiled from public-facing websites and public sources. This is an independent press-logistics tool and is not associated with, endorsed by, or affiliated with the U.S. Senate, the Senate Rules Committee, the Senate Radio-TV Gallery, or any Senate office or committee. Coverage locations and access are subject to Senate rules, Gallery guidance, committee direction, and official direction. This site does not provide restricted-access information or nonpublic operational details.</p></section>
             </main>
             <script id="notification-events" type="application/json">{notification_events_json}</script>
             <script src="/static/app.js?v=20260509a"></script>
